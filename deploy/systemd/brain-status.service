@@ -1,0 +1,23 @@
+# Example unit for the g-spine probes. brain-status.timer runs it every 5 minutes. It
+# probes the services in the instance manifest, writes @BRAIN_ROOT@/status/snapshot.json
+# and pages on state changes. Placeholders as in brain-mcp.service, plus:
+#   @HOST@  this host's id in the instance manifest
+# Units on this host are checked with systemctl, the rest over SSH. Without BRAIN_HOST
+# every service is treated as local. The manifest is fetched from the instance repo,
+# named by the instance checkout's origin remote. Set G_INSTANCE_REPO=owner/name to
+# override it.
+# Dependency probe keys are read from @REPO@/voice/.env when present.
+[Unit]
+Description=g-spine: probe services and write the status snapshot
+After=network.target
+OnFailure=g-alert@%n.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@REPO@
+Environment=BRAIN_ROOT=@BRAIN_ROOT@
+Environment=BRAIN_HOST=@HOST@
+EnvironmentFile=-@REPO@/.env
+EnvironmentFile=-@REPO@/voice/.env
+ExecStart=@REPO@/.venv/bin/python -m g_spine.status

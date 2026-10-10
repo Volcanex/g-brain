@@ -1,0 +1,77 @@
+# voice: interactive face of the brain (WhatsApp + OpenRouter)
+
+The third layer of the live system: `Cortex ← Pulse ← Voice`. See
+`designs/brain-voice` and `designs/pulse` in the brain for the architecture.
+
+## What it is
+A small FastAPI service. WhatsApp messages in → an OpenRouter reasoning loop with
+brain tools → a reply out. Runs on the brain host as `voice.service`, proxied at
+the instance's `VOICE_PUBLIC_URL`.
+
+## Why it imports g-brain directly
+The Voice runs *beside* the brain code, so it calls `brain_reader` /
+`brain_todos` / `brain_commit` in-process instead of the OAuth-gated MCP face.
+The MCP/REST faces are for *remote* agents; the Voice is local. Same codepath the
+MCP tools use.
+
+## Safety contract
+- Reads the cortex freely; may create L6 todos directly.
+- **Never** writes a durable note without an explicit in-chat 'yes': the model
+  must `propose_commit` (draft), show the owner, then `execute_commit` only on
+  confirmation. Enforced by the system prompt, not by code. Keep it that way
+  deliberately (the human is the gate).
+- Inbound is fail-closed: Telnyx **Ed25519** webhook signature check
+  (`telnyx-signature-ed25519` + `telnyx-timestamp`, verified with
+  `TELNYX_PUBLIC_KEY`) **and** a sender allowlist (`VOICE_ALLOWED_NUMBERS`).
+  Empty allowlist = nobody.
+- Photo messages: owner senders can send JPEG/PNG/WebP/GIF images. Media is
+  fetched after the 200 ACK (background task), base64-encoded for the vision
+  model, then discarded: only a `[photo]` placeholder lands in history.
+  Guests get text-only (media silently dropped).
+
+## Files
+- `app.py`: webhook (GET verify / POST inbound) + `/health`; logs one journal
+  line per inbound message (sender, text_len, media_count, not the full text)
+- `agent.py`: OpenRouter tool-calling loop; per-sender history is rehydrated
+  from transcript on first access after a restart (restart-proof, no amnesia)
+- `transcript.py`: write-through JSONL transcript; one file per sender in
+  `g_config.VOICE_TRANSCRIPT_DIR` (default `$BRAIN_ROOT/.pulse/state/voice/`,
+  moved by setting `VOICE_TRANSCRIPT_DIR`, which the tests do). To review a
+  conversation: `cat $BRAIN_ROOT/.pulse/state/voice/+<number>.jsonl`
+- `tools.py`: brain tool wrappers (the bounded toolset)
+- `whatsapp.py`: Telnyx WhatsApp transport: send (`POST /v2/messages/whatsapp`)
+  + Ed25519 webhook verify + inbound parse. `parse_inbound` yields
+  `(sender, text, media)` where `media` is a list of `{url, content_type}` dicts
+  and `text` may be None for caption-less photos. `fetch_media(url)` downloads a
+  Telnyx media URL (Bearer auth for telnyx.com hosts), caps at 5 MB, returns
+  `(bytes, content_type)` or None. Telnyx is the BSP.
+- `prompt.py`: identity + the gate rule
+- `cli.py`: local tester (`python -m voice.cli`), no WhatsApp needed
+- `config.py`: all env; secrets arrive via `push-secrets` → `voice/.env`
+
+## Run / test
+- Local brain chat (needs only `OPENROUTER_API_KEY`): from the repo root,
+  `.venv/bin/python -m voice.cli`
+- Service: `uvicorn voice.app:app --host 127.0.0.1 --port 8077`
+- Health: `curl localhost:8077/health`, shows which creds are still missing.
+
+## Gotchas
+- **This package configures its own logging, and must.** uvicorn sets up only
+  its own loggers; the root logger stays at WARNING with no handler, so every
+  `log.info` here is discarded unless `app.py` attaches a handler to the
+  `"voice"` logger. It does. Don't remove it, and don't "verify" logging from a
+  test that calls `basicConfig`: that installs a root handler and hides the
+  very bug you're testing for. Check the real journal instead.
+- The model id is injected into the system prompt (`agent.py`) so "what model
+  are you running?" has a truthful answer. Without it the model guesses from
+  training data and confidently claims to be Claude.
+- `voice/.env` is written by `push-secrets`, never committed. `VOICE_MODEL` is
+  pinned in the passport (the instance `.env`); setting it only in `voice/.env` gets
+  reverted by the next `push-secrets` run.
+- `/health` returns **503** when any dependency check fails. That is deliberate:
+  g-core's contract is "health_url -> expect 2xx", so a 200 with `{"ok": false}`
+  tells the alert spine everything is fine while the bot is about to go mute.
+- Semantic search isn't wired yet: `brain_search` is plain text match over
+  note bodies (MVP). Upgrade path: basic-memory at 127.0.0.1:8765.
+- Conversation history survives restarts: rehydrated from the JSONL transcript
+  in `VOICE_TRANSCRIPT_DIR` on first access per sender.

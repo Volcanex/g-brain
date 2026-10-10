@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# pulse: inspect the live pulse layer from the command line.
+# Usage: pulse inlets | pulse show <id> | pulse brief
+here="$(dirname "$(readlink -f "$0")")"
+exec "$here/.venv/bin/python" "$here/brain_pulse.py" "$@"

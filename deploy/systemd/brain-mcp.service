@@ -1,0 +1,31 @@
+# Example unit for the brain host (MCP server, HTTP API, OAuth). Replace the @NAME@
+# placeholders, copy to /etc/systemd/system/ and enable it.
+#   @USER@        the account that owns the vault
+#   @REPO@        this checkout, with its venv at @REPO@/.venv
+#   @BRAIN_ROOT@  the vault
+#   @MCP_URL@     the public https URL the MCP endpoint is reached at. It can live in
+#                 the instance passport instead. Unset, OAuth names 127.0.0.1:8766.
+# Secrets (GITHUB_TOKEN, NTFY_URL and the rest) go in @REPO@/.env, mode 600.
+# The instance repo (its manifest.json and .env passport) is found beside @REPO@ under
+# the directory name gp-core.
+# If it lives elsewhere, set G_INSTANCE in every unit.
+[Unit]
+Description=g-brain host: MCP server and HTTP API
+After=network.target
+
+[Service]
+User=@USER@
+WorkingDirectory=@REPO@
+Environment=BRAIN_ROOT=@BRAIN_ROOT@
+Environment=MCP_PUBLIC_URL=@MCP_URL@
+# Only behind Cloudflare Access with headless service tokens:
+# Environment=BRAIN_ACCESS_ISSUER=https://@TEAM@.cloudflareaccess.com
+# Environment=BRAIN_ACCESS_AUDIENCE=@ACCESS_AUD@
+# Environment=BRAIN_ACCESS_CLIENT_IDS=@CLIENT_ID@
+EnvironmentFile=-@REPO@/.env
+ExecStart=@REPO@/.venv/bin/uvicorn g_brain.server:app --host 127.0.0.1 --port 8766
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

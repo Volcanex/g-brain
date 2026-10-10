@@ -1,0 +1,14 @@
+# Example OnFailure target. A unit that must not fail silently adds
+#   OnFailure=g-alert@%n.service
+# and its failure reaches the phone through the alert spine, with the tail of its
+# journal in the message. Placeholders as in brain-mcp.service.
+[Unit]
+Description=Page the alert spine that %i failed
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@REPO@
+Environment=BRAIN_ROOT=@BRAIN_ROOT@
+EnvironmentFile=-@REPO@/.env
+ExecStart=@REPO@/.venv/bin/python -m g_spine.unit_alert %i

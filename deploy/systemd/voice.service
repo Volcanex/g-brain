@@ -1,0 +1,19 @@
+# Example unit for g-voice (WhatsApp and web chat over the brain). Placeholders as in
+# brain-mcp.service. Its keys (OpenRouter, Telnyx, owner numbers) go in
+# @REPO@/voice/.env. The file is optional so the unit starts before it exists, and
+# /health then names the missing keys.
+[Unit]
+Description=g-voice: chat interface to the brain
+After=network.target brain-mcp.service
+
+[Service]
+User=@USER@
+WorkingDirectory=@REPO@
+Environment=BRAIN_ROOT=@BRAIN_ROOT@
+EnvironmentFile=-@REPO@/voice/.env
+ExecStart=@REPO@/.venv/bin/uvicorn voice.app:app --host 127.0.0.1 --port 8077
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

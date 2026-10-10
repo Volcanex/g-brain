@@ -1,0 +1,15 @@
+# Example unit for todo reminders. outlet-remind.timer runs it every 5 minutes, and it
+# sends a ntfy reminder for each todo that falls due. Placeholders as in
+# brain-mcp.service. NTFY_URL goes in @REPO@/outlets/.env.
+[Unit]
+Description=g-todos: send reminders for due todos
+After=network.target
+OnFailure=g-alert@%n.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@REPO@
+Environment=BRAIN_ROOT=@BRAIN_ROOT@
+EnvironmentFile=-@REPO@/outlets/.env
+ExecStart=@REPO@/.venv/bin/python -m outlets.remind
