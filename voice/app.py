@@ -6,9 +6,11 @@
 
 Run: uvicorn voice.app:app --host 127.0.0.1 --port 8077  (from the repo root)
 """
+import json
 import logging
 import sys
 
+import brain_alerts
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from pydantic import BaseModel
 
@@ -71,6 +73,24 @@ async def chat(body: ChatIn):
     return {"reply": reply}
 
 
+# A reply that never goes out looks like silence on the phone, so it pages
+# through ntfy, which does not depend on Telnyx. Once per cooldown while it
+# stays broken; the next delivered reply clears it.
+_SEND_ALERT = "voice-send"
+
+
+def _send_failed(why: str):
+    brain_alerts.send("error", "voice", f"WhatsApp reply not sent: {why}", dedup_key=_SEND_ALERT)
+
+
+def _telnyx_error(body) -> str:
+    try:
+        e = json.loads(body)["errors"][0]
+        return f"{e.get('code')} {e.get('title')}: {e.get('detail')}"
+    except Exception:
+        return str(body)[:200]
+
+
 def _process(sender: str, text: str, media: list, owner: bool = True):
     """Runs after we've already ACKed Telnyx: does the slow LLM work, then replies."""
     try:
@@ -83,8 +103,13 @@ def _process(sender: str, text: str, media: list, owner: bool = True):
         reply = agent.handle(sender, text, owner=owner, images=images or None)
         result = whatsapp.send_text(sender, reply)
         log.warning("send -> %s: status=%s body=%s", sender, result.get("status"), str(result.get("body"))[:400])
-    except Exception:
+        if 200 <= result.get("status", 0) < 300:
+            brain_alerts.clear(_SEND_ALERT)
+        else:
+            _send_failed(f"Telnyx {result.get('status')}, {_telnyx_error(result.get('body'))}")
+    except Exception as e:
         log.exception("voice processing failed for %s", sender)
+        _send_failed(f"{type(e).__name__}: {e}")
 
 
 @app.post("/webhook")

@@ -71,6 +71,11 @@ MCP tools use.
 - `/health` returns **503** when any dependency check fails. That is deliberate:
   g-core's contract is "health_url -> expect 2xx", so a 200 with `{"ok": false}`
   tells the alert spine everything is fine while the bot is about to go mute.
+- A reply that does not go out (Telnyx refuses it, or `_process` raises) pages
+  through `brain_alerts` with `dedup_key="voice-send"`: once per six-hour
+  cooldown while it stays broken, cleared by the next delivered reply. Without
+  it a refused send is just silence on the phone; Telnyx's 403 10038 (account
+  level) went unnoticed for days in October 2026.
 - Semantic search isn't wired yet: `brain_search` is plain text match over
   note bodies (MVP). Upgrade path: basic-memory at 127.0.0.1:8765.
 - Conversation history survives restarts: rehydrated from the JSONL transcript
