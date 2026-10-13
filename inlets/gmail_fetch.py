@@ -22,6 +22,7 @@ import imaplib
 import json
 import os
 import re
+import urllib.request
 
 import g_config
 
@@ -132,6 +133,18 @@ def main():
         print("Subject:", _decode(msg.get("Subject")))
         print("Body:", _body_text(msg))
         print()
+
+    # The distiller dedupes against these by meaning; the applier only catches
+    # exact titles, which is how one DistroKid bill became six todos.
+    if args.check and uids:
+        print("=" * 8, "open todos (never create a second todo for any of these)")
+        try:
+            todos = json.load(urllib.request.urlopen(
+                os.environ.get("BRAIN_API", "http://127.0.0.1:8766/api") + "/todos?status=open", timeout=30))
+            for t in todos:
+                print("-", t["title"])
+        except OSError as e:
+            print(f"(unavailable: {e})")
 
     if uids and not args.days:
         os.makedirs(os.path.dirname(STATE), exist_ok=True)

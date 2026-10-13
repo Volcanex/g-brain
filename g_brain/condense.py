@@ -16,7 +16,7 @@ agrees: `ai-auto` cannot perform destructive ops at all.
 So condensing splits in two, and this is the half that can run alone:
 
   - **Detection** (here, on a timer): mechanical signals, no model, no writes.
-    Produces status/condense.json and pages the spine when the backlog grows.
+    Produces status/condense.json; the session context shows the backlog, so it never pages.
   - **Condensation** (the `brain-condense` skill): an agent with the owner in the
     session reads this report, proposes specific merges, and executes them.
     Under the current gate most merges are its own call; only the load-bearing
@@ -55,7 +55,6 @@ REPORT_PATH = BRAIN_ROOT / "status" / "condense.json"
 # on it would be making exactly the judgement it is least equipped to make.
 OVERLAP_THRESHOLD = 0.20
 ACCRETION_STAMPS = 3       # dated appends before a note wants rewriting as prose
-BACKLOG_ALERT = 12         # total items before the spine hears about it
 
 CANONICAL_KINDS = {"design", "finding", "idea", "reference", "source", "log"}
 
@@ -316,29 +315,11 @@ def scan() -> dict:
     }
 
 
-def _notify(report: dict) -> None:
-    """Tell the spine only when there's enough to be worth a session."""
-    if report["backlog"] < BACKLOG_ALERT:
-        return
-    try:
-        from brain_alerts import send
-    except Exception:  # noqa: BLE001
-        return
-    c = report["counts"]
-    send("info", "brain-condense",
-         f"brain has {report['backlog']} condensation candidates "
-         f"({c['stale']} possibly-outdated, {c['overlaps']} overlapping pairs, "
-         f"{c['accreted']} accreted, {c['orphans']} orphans), "
-         "run /brain-condense when you have a session",
-         dedup_key="brain-condense-backlog")
-
-
 def main() -> int:
     report = scan()
     if "--dry-run" not in sys.argv:
         REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
         REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n")
-        _notify(report)
 
     print(json.dumps({
         "checked_at": report["checked_at"],
