@@ -1,18 +1,24 @@
 """inlets/subs: recurring charges from the ledger become dated todos.
 
 `gfin subs` knows what recurs and when it next bills. This turns each of those
-into a todo, and then does nothing else: the reminder ladder already gives
-`finance` a 3-day and a 1-day warning, which is exactly the notice needed to
-get money into the account before a charge lands. Building a second alerting
+into a todo, and then does nothing else: the reminder ladder gives a recurring
+`finance` todo one warning, the day before, which is the notice needed to get
+money into the account before a charge lands. Building a second alerting
 path for subscriptions would have meant a second thing to keep working.
 
-Idempotent by slug (`sub-<id>`), so a run rewrites the same nine todos rather
+Idempotent by slug (`sub-<id>`), so a run rewrites the same todos rather
 than accumulating. A subscription marked `cancel` in the registry gets a
 one-off P1 to go and cancel it instead of a recurring charge reminder.
 
 A subscription the ledger has never seen gets no todo at all. `gfin subs`
 returns no date for those on purpose, and a reminder on a guessed billing day
 is worse than none: it trains you to ignore the channel.
+
+A subscription that missed its last charge is `lapsed`, usually because
+Gabriel let it fail on purpose. Its todo is set `expired` (sub todos carry no
+`expires`, so nothing else sets that), and it reopens by itself if the
+charges come back; done and
+cancelled are the owner's and stay closed.
 
 Run a pass:  .venv/bin/python -m inlets.subs
 """
@@ -43,9 +49,14 @@ def _upsert(slug, fields, body):
     """
     try:
         post = brain_todos._load(slug)
-        if str(post.metadata.get("status") or "open") != "open":
+        status = str(post.metadata.get("status") or "open")
+        if status == "expired":
+            post["status"] = "open"
+            action = "reopened"
+        elif status != "open":
             return "skipped-closed"
-        action = "updated"
+        else:
+            action = "updated"
     except FileNotFoundError:
         import frontmatter
         post = frontmatter.Post(content="")
@@ -70,6 +81,19 @@ def run():
     for sub in rows:
         slug = f"sub-{sub['id']}"
         amount = f"£{sub['amount']:.2f}" if sub["amount"] is not None else "amount unknown"
+
+        if sub.get("lapsed"):
+            counts["lapsed"] = counts.get("lapsed", 0) + 1
+            try:
+                post = brain_todos._load(slug)
+            except FileNotFoundError:
+                continue
+            if str(post.metadata.get("status") or "open") == "open":
+                post["status"] = "expired"
+                post.content = (f"Lapsed: no charge since {sub['last_charged']}, so no "
+                                f"reminder. Reopens if the charges come back.\n")
+                brain_todos._save(slug, post)
+            continue
 
         if sub["status"] == "cancel":
             action = _upsert(slug, {
@@ -108,7 +132,7 @@ with the ledger: the date corrects itself each time a real charge lands, so it
 is only ever wrong until the next one.
 
 Last seen {amount} on {sub['last_charged']}, across {sub['charges']} charge(s)
-in the ledger. The finance ladder warns 3 days and 1 day ahead, which is the
+in the ledger. The finance ladder warns once, the day before, which is the
 notice needed to get money into the account first.
 """)
         counts[action] = counts.get(action, 0) + 1
