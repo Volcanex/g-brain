@@ -62,17 +62,18 @@ def _check_http(url, timeout=8):
         return ("down", type(e).__name__)
 
 
-def _check_http_on_host(host_user, host_ip, url, timeout=8):
-    """For a service that only listens on a private address of its own host."""
+def _check_http_from(host_user, host_ip, url, timeout=8):
+    """For a service on a private network that this host is not on."""
+    # The probe key on the far side is a forced command that allows only this verb.
     cmd = ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", f"{host_user}@{host_ip}",
-           "curl", "-s", "-o", "/dev/null", "-m", str(timeout), "-w", "%{http_code}", url]
+           "http-status", url]
     try:
         code = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 12).stdout.strip()
     except Exception as e:  # noqa: BLE001
-        return ("unknown", f"on-host probe failed: {type(e).__name__}")
+        return ("unknown", f"remote probe failed: {type(e).__name__}")
     if code.startswith("2"):
-        return ("up", f"HTTP {code} (on host)")
-    return ("down", f"HTTP {code or 'no response'} (on host)")
+        return ("up", f"HTTP {code}")
+    return ("down", f"HTTP {code or 'no response'}")
 
 
 def _check_tcp(host, port, timeout=5):
@@ -449,9 +450,10 @@ def probe(svc, hosts):
     if svc.get("paused"):
         method = "paused"
         state, detail = ("paused", svc["paused"])
-    elif health_url and svc.get("probe_on_host") and not _local(svc.get("host")):
-        method = "health_url@host"
-        state, detail = _check_http_on_host(host.get("user"), host.get("hostname"), health_url)
+    elif health_url and svc.get("probe_from") and not _local(svc["probe_from"]):
+        via = hosts.get(svc["probe_from"], {})
+        method = f"health_url@{svc['probe_from']}"
+        state, detail = _check_http_from(via.get("user"), via.get("hostname"), health_url)
     elif health_url:
         method = "health_url"
         state, detail = _check_http(health_url)
