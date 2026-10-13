@@ -26,10 +26,12 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 import urllib.parse
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from mcp.server.auth.provider import AccessToken, RefreshToken, RegistrationError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
@@ -172,13 +174,30 @@ class BrainOAuthProvider(InMemoryOAuthProvider):
 
     # ---- override token-issuing methods to persist -------------------
 
+    @contextmanager
+    def _token_transaction(self) -> Iterator[None]:
+        # The parent replaces entries without mutating the token objects.
+        state = {name: getattr(self, name).copy() for name in (
+            "auth_codes", "access_tokens", "refresh_tokens",
+            "_access_to_refresh_map", "_refresh_to_access_map",
+        )}
+        try:
+            yield
+            self._save_tokens()
+        except Exception:
+            for name, snapshot in state.items():
+                current = getattr(self, name)
+                current.clear()
+                current.update(snapshot)
+            raise
+
     async def exchange_authorization_code(
         self,
         client: OAuthClientInformationFull,
         authorization_code: Any,
     ) -> OAuthToken:
-        token = await super().exchange_authorization_code(client, authorization_code)
-        self._save_tokens()
+        with self._token_transaction():
+            token = await super().exchange_authorization_code(client, authorization_code)
         return token
 
     async def exchange_refresh_token(
@@ -187,13 +206,13 @@ class BrainOAuthProvider(InMemoryOAuthProvider):
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        token = await super().exchange_refresh_token(client, refresh_token, scopes)
-        self._save_tokens()
+        with self._token_transaction():
+            token = await super().exchange_refresh_token(client, refresh_token, scopes)
         return token
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
-        await super().revoke_token(token)
-        self._save_tokens()
+        with self._token_transaction():
+            await super().revoke_token(token)
 
     # ---- DCR override ------------------------------------------------
 
@@ -217,9 +236,18 @@ class BrainOAuthProvider(InMemoryOAuthProvider):
 # ---- helpers ---------------------------------------------------------
 
 def _atomic_write(path: Path, data: dict[str, Any]) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
-    tmp.replace(path)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent,
+        prefix=path.name + ".", suffix=".tmp", delete=False,
+    )
+    try:
+        with tmp:
+            json.dump(data, tmp, indent=2, sort_keys=True)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp.name, path)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 def build_provider(*, base_url: str, store_path: Path) -> BrainOAuthProvider:

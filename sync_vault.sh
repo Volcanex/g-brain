@@ -34,8 +34,16 @@ fi
 
 # The MCP writes continuously; anything sitting in the tree is its work.
 if [[ -n "$(git status --porcelain)" ]]; then
-  git add -A
-  git commit -q -m "vault: $(date -u +%Y-%m-%dT%H:%MZ)" || true
+  if ! git add -A; then
+    echo "brain-vault: add failed, local writes were not committed" >&2
+    exit 1
+  fi
+  if ! git diff --cached --quiet; then
+    if ! git commit -q -m "vault: $(date -u +%Y-%m-%dT%H:%MZ)"; then
+      echo "brain-vault: commit failed, local writes were not committed" >&2
+      exit 1
+    fi
+  fi
 fi
 
 behind="$(git rev-list --count HEAD..origin/$BRANCH)"
