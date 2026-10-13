@@ -13,8 +13,12 @@ topic, and no code here knows about them.
 - `status.py`: the L5 watcher. Probes every manifest service and every catalog dependency,
   alerts on transitions tiered by criticality, re-pages a vital dependency that stays down,
   and writes `status/snapshot.json` in the vault.
+- `reflexes.py`: starts dead local units, restarts a stale search index and cleans the root
+  disk. Keeps attempts in `status/reflexes.json` and actions in `status/reflex-log.jsonl`.
 - `unit_alert.py`: the `OnFailure=g-alert@%n.service` hook. One alert per failed unit, with
   the journal tail attached.
+- `../deploy/`: `g-reflex` is the root wrapper and `g-reflex.sudoers` grants the watcher
+  access to it. The integrator installs them in `/usr/local/sbin` and `/etc/sudoers.d`.
 
 ## Rules
 - Imports only `g_config`. The spine must keep working when the corpus, todos or pulse are
@@ -27,6 +31,11 @@ topic, and no code here knows about them.
   are aliases for these modules. See "Old module names still work" in the root `CLAUDE.md`.
 - `BRAIN_ALERTS_DRY_RUN=1` is for a manual test send. Never set it for the test suite. The
   tests patch `dry_run` where they need it.
+
+Fix, verify, then page only if the fix failed. Only inactive or failed local units get
+started, and the wrapper requires them to be enabled. Search restarts are verified on the
+next timer run. Each remedy gets at most two attempts per target in six hours. A healed
+service never pages. Disk cleanup starts at 85 percent used and pages if 90 percent remains.
 
 More on dedup, tiers and the dependency catalog: "Alerting & dependencies (the spine)" in
 the root `CLAUDE.md`.

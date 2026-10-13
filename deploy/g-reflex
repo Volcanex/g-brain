@@ -1,0 +1,113 @@
+#!/usr/bin/python3 -I
+"""Root-only remedies allowed to the status watcher by sudoers."""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+# Never load executables, modules or configuration from the invoking user's paths.
+os.environ["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"
+PIP_CACHES = [Path("/root/.cache/pip"), Path("/home/gabriel/.cache/pip")]
+# Claude scratch: /tmp/claude-<uid>/<project>/<session>. Live sessions sit beside
+# stale ones, so age is judged per entry by its newest file, never by a dir's mtime.
+SCRATCH_ROOT, SCRATCH_DAYS, SCRATCH_DEPTH = Path("/tmp"), 7, 2
+
+
+def _run(cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"{cmd[0]}: {exc}", file=sys.stderr)
+        return None
+
+
+def _remove(path):
+    try:
+        if any(parent.is_symlink() for parent in path.parents):
+            print(f"{path}: refusing a symlinked parent", file=sys.stderr)
+            return
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+    except OSError as exc:
+        print(f"{path}: {exc}", file=sys.stderr)
+
+
+def _newest(path):
+    newest = path.lstat().st_mtime
+    if path.is_dir() and not path.is_symlink():
+        for child in path.iterdir():
+            newest = max(newest, _newest(child))
+    return newest
+
+
+def _prune(directory, cutoff, depth):
+    for child in directory.iterdir():
+        try:
+            if _newest(child) < cutoff:
+                if child.is_dir() and not child.is_symlink():
+                    _remove(child)
+                else:
+                    child.unlink()
+            elif depth and child.is_dir() and not child.is_symlink():
+                _prune(child, cutoff, depth - 1)
+        except OSError as exc:
+            print(f"{child}: {exc}", file=sys.stderr)
+
+
+def _clean_disk():
+    before = shutil.disk_usage("/").free
+    for cmd in (["journalctl", "--vacuum-size=1G"], ["apt-get", "clean"],
+                ["docker", "builder", "prune", "-f"], ["docker", "image", "prune", "-f"]):
+        _run(cmd)
+    for path in PIP_CACHES:
+        _remove(path)
+    cutoff = time.time() - SCRATCH_DAYS * 86400
+    for root in SCRATCH_ROOT.glob("claude-*"):
+        if root.is_dir() and not root.is_symlink() and root.stat().st_uid in (0, 1000):
+            _prune(root, cutoff, SCRATCH_DEPTH)
+    print(max(0, shutil.disk_usage("/").free - before))
+    return 0
+
+
+def main(args=None):
+    args = sys.argv[1:] if args is None else args
+    if args == ["clean-disk"]:
+        return _clean_disk()
+    if args == ["restart", "basic-memory"]:
+        out = _run(["systemctl", "restart", "basic-memory.service"])
+        return out.returncode if out else 1
+    if len(args) != 2 or args[0] != "start":
+        print("allowed: start <enabled service>, restart basic-memory, clean-disk", file=sys.stderr)
+        return 1
+    unit = args[1]
+    if not re.fullmatch(r"[A-Za-z0-9@._-]+", unit) or unit.startswith("-"):
+        print("invalid unit", file=sys.stderr)
+        return 1
+    if not Path(unit).suffix:
+        unit += ".service"
+    if not unit.endswith(".service"):
+        print("only service units may be started", file=sys.stderr)
+        return 1
+    enabled = _run(["systemctl", "is-enabled", unit])
+    if not enabled or enabled.returncode != 0 or enabled.stdout.strip() != "enabled":
+        print("unit must be enabled", file=sys.stderr)
+        return 1
+    active = _run(["systemctl", "is-active", unit])
+    if active and active.stdout.strip() == "active":
+        return 0
+    if not active or active.stdout.strip() not in ("inactive", "failed"):
+        print("unit must be inactive or failed", file=sys.stderr)
+        return 1
+    _run(["systemctl", "reset-failed", unit])
+    out = _run(["systemctl", "start", unit])
+    return out.returncode if out else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

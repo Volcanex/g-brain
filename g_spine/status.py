@@ -8,6 +8,7 @@ The manifest stays the SSOT for *what should exist*; this records *what is alive
 """
 import json
 import hashlib
+import shutil
 import sqlite3
 import time
 import os
@@ -24,6 +25,7 @@ import httpx
 
 import brain_alerts
 import g_config
+from g_spine import reflexes
 
 GITHUB_TOKEN = g_config.env("GITHUB_TOKEN") or None
 
@@ -266,7 +268,8 @@ def _prior_states(snap_path):
         return None
     states = {}
     for r in prev.get("services", []) + prev.get("dependencies", []):
-        states[r["id"]] = r["state"]
+        # A deferred outage still needs its transition page if remedies run out.
+        states[r["id"]] = "unknown" if r.get("reflex_pending") else r["state"]
     return states
 
 
@@ -342,6 +345,12 @@ def _alert_transitions(prior, results):
     for r in results:
         rid, now, was = r["id"], r["state"], prior.get(r["id"])
         key = f"status:{rid}"
+        if r.get("healed"):
+            if not brain_alerts.dry_run():
+                brain_alerts.clear(key)
+            continue
+        if r.get("reflex_pending"):
+            continue
         bad = ("down", "warn")
         vital = r.get("kind") == "dependency" and r.get("criticality") == "vital"
         if now in bad and was not in bad:
@@ -508,6 +517,17 @@ def run():
 
     hosts = {h["id"]: h for h in manifest.get("hosts", [])}
     results = [probe(svc, hosts) for svc in manifest.get("services", [])]
+    out_dir = BRAIN_ROOT / "status"
+    remedies = reflexes.Reflexes(out_dir)
+    disk = remedies.clean_disk(shutil.disk_usage("/"))
+    remedies.repair_services(results, manifest.get("services", []), hosts, probe, _local, _check_unit)
+
+    if disk["used_pct"] >= 90 and "status:disk" not in brain_alerts.load_state():
+        brain_alerts.send("error", "disk",
+                          f"root disk still {disk['used_pct']:g}% used after cleanup, "
+                          f"{disk['free_gb']:g} GiB free", dedup_key="status:disk")
+    elif disk["used_pct"] < 85 and not brain_alerts.dry_run():
+        brain_alerts.clear("status:disk")
     for r in results:
         print(f"  {r['id']:16} {r['state']:8} ({r['method']}) {r['detail']}")
 
@@ -518,7 +538,6 @@ def run():
     for d in deps:
         print(f"  {d['id']:16} {d['state']:8} (dep) {d['detail']}")
 
-    out_dir = BRAIN_ROOT / "status"
     out_dir.mkdir(parents=True, exist_ok=True)
     snap_path = out_dir / "snapshot.json"
 
@@ -545,6 +564,7 @@ def run():
         },
         "services": results,
         "dependencies": deps,
+        "disk": disk,
     }
     snap_path.write_text(json.dumps(snapshot, indent=2))
     print(f"brain_status: wrote {snap_path}")

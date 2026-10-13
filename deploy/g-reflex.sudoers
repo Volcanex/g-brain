@@ -1,0 +1,1 @@
+gabriel ALL=(root) NOPASSWD: /usr/local/sbin/g-reflex
