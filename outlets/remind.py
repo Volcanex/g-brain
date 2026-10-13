@@ -14,6 +14,8 @@ by `category` (LADDERS), not the single `remind_min` the old version had:
     family     3d, 1d            study    4w, 2w, 1w, 3d, 1d
     finance    3d, 1d            errand   1d, 2h
 
+A recurring finance todo (a subscription charge) gets only the 1d rung.
+
 `remind_min`, if a todo sets one, still wins: it is an explicit instruction.
 
 **Proportionality.** A rung whose moment is already past when the todo is made

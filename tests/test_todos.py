@@ -88,6 +88,10 @@ def test_floor():
           B.ladder_for({"category": "deadline"}))
     # finance's reaction rung is a day: money needs a day to move.
     check("reaction rung present", B.ladder_for({"category": "finance"})[-1], DAY)
+    check("recurring charge pings once, a day ahead",
+          B.ladder_for({"category": "finance"}, interval_min=30 * DAY), [DAY])
+    check("recurring charge keeps an explicit extra",
+          B.ladder_for({"category": "finance", "reminders": [WEEK]}, interval_min=30 * DAY), [WEEK, DAY])
 
 
 def test_all_day_rungs():

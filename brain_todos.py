@@ -136,6 +136,11 @@ def ladder_for(todo: dict, all_day: bool = False,
     """
     cat = str(todo.get("category") or "").lower()
     rungs = set(LADDERS.get(cat, DEFAULT_LADDER))
+    # A recurring charge gets one ping, the day before: Gabriel asked for
+    # exactly one per charge (2026-10-13), and a day is what money needs to
+    # move. Explicit `reminders` (rent's week) still merge in below.
+    if interval_min and cat == "finance":
+        rungs = {REACTION["finance"]}
     for extra in (todo.get("reminders") or []):
         try:
             rungs.add(int(extra))
