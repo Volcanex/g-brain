@@ -62,6 +62,19 @@ def _check_http(url, timeout=8):
         return ("down", type(e).__name__)
 
 
+def _check_http_on_host(host_user, host_ip, url, timeout=8):
+    """For a service that only listens on a private address of its own host."""
+    cmd = ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", f"{host_user}@{host_ip}",
+           "curl", "-s", "-o", "/dev/null", "-m", str(timeout), "-w", "%{http_code}", url]
+    try:
+        code = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 12).stdout.strip()
+    except Exception as e:  # noqa: BLE001
+        return ("unknown", f"on-host probe failed: {type(e).__name__}")
+    if code.startswith("2"):
+        return ("up", f"HTTP {code} (on host)")
+    return ("down", f"HTTP {code or 'no response'} (on host)")
+
+
 def _check_tcp(host, port, timeout=5):
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -433,7 +446,13 @@ def probe(svc, hosts):
     port = svc.get("port")
     unit = svc.get("unit")
 
-    if health_url:
+    if svc.get("paused"):
+        method = "paused"
+        state, detail = ("paused", svc["paused"])
+    elif health_url and svc.get("probe_on_host") and not _local(svc.get("host")):
+        method = "health_url@host"
+        state, detail = _check_http_on_host(host.get("user"), host.get("hostname"), health_url)
+    elif health_url:
         method = "health_url"
         state, detail = _check_http(health_url)
     elif domain:
@@ -512,6 +531,7 @@ def run():
             "warn": sum(1 for r in results if r["state"] == "warn"),
             "down": sum(1 for r in results if r["state"] == "down"),
             "unknown": sum(1 for r in results if r["state"] == "unknown"),
+            "paused": sum(1 for r in results if r["state"] == "paused"),
             "total": len(results),
         },
         "dep_summary": {
