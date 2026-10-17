@@ -107,6 +107,8 @@ def _process(sender: str, text: str, media: list, owner: bool = True):
             brain_alerts.clear(_SEND_ALERT)
         else:
             _send_failed(f"Telnyx {result.get('status')}, {_telnyx_error(result.get('body'))}")
+            if owner and config.NTFY_FALLBACK:
+                brain_alerts.send("info", "voice reply", whatsapp.format_for_whatsapp(reply)[:3500])
     except Exception as e:
         log.exception("voice processing failed for %s", sender)
         _send_failed(f"{type(e).__name__}: {e}")

@@ -34,6 +34,10 @@ TELNYX_API_KEY = os.environ.get("TELNYX_API_KEY", "")            # Bearer for th
 TELNYX_WHATSAPP_NUMBER = os.environ.get("TELNYX_WHATSAPP_NUMBER", "")  # bot sender, +E.164
 TELNYX_PUBLIC_KEY = os.environ.get("TELNYX_PUBLIC_KEY", "")      # base64 Ed25519, webhook verify
 TELNYX_API = "https://api.telnyx.com/v2"
+# When Telnyx refuses a reply, push the owner's reply text through ntfy instead
+# so it is read rather than lost. Off by default: ntfy.sh is a public relay and
+# the topic name is the only lock on it, so the owner opts in.
+NTFY_FALLBACK = os.environ.get("VOICE_NTFY_FALLBACK", "").strip().lower() not in ("", "0", "false", "no")
 
 # --- access control ---------------------------------------------------------
 # Only these sender numbers may talk to the brain. Comma-separated E.164 without
