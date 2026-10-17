@@ -120,6 +120,9 @@ def send(level: str, source: str, msg: str, dedup_key: str | None = None,
     if dry_run():
         return {"ok": True, "dry_run": True}
     if dedup_key and _within_cooldown(dedup_key):
+        # The line above prints for every attempt; this marks the ones that never
+        # reached the phone, so the journal can be counted as pages after the fact.
+        print(f"[brain-alert] suppressed by cooldown ({dedup_key})", flush=True)
         return {"ok": True, "suppressed": True}
     priority, tags = _LEVELS.get(level, ("default", ""))
     url = env("NTFY_URL")
