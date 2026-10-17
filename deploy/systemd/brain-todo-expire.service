@@ -1,0 +1,15 @@
+# Example unit for the todo expiry sweep. brain-todo-expire.timer runs it daily, and it
+# retires open todos past their expiry. Placeholders as in brain-mcp.service.
+[Unit]
+Description=Brain TODO expiry sweep - retire open TODOs past their expiry
+After=network.target
+OnFailure=g-alert@%n.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@REPO@
+Environment=BRAIN_ROOT=@BRAIN_ROOT@
+ExecStart=@REPO@/.venv/bin/python brain_todos.py
+StandardOutput=journal
+StandardError=journal

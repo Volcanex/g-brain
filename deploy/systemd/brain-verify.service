@@ -1,0 +1,14 @@
+# Example unit for the rewrite-safety sweep. brain-verify.timer runs it daily, and it
+# resolves stale_dep flags. Placeholders as in brain-mcp.service.
+[Unit]
+Description=Brain rewrite-safety sweep - resolve stale_dep flags
+After=network.target
+OnFailure=g-alert@%n.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@REPO@
+Environment=BRAIN_ROOT=@BRAIN_ROOT@
+EnvironmentFile=-@REPO@/voice/.env
+ExecStart=@REPO@/.venv/bin/python -m g_brain.verify

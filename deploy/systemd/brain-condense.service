@@ -1,0 +1,14 @@
+# Example unit for the condensation detector. brain-condense.timer runs it daily, and it
+# flags outdated, overlapping and accreted notes. Placeholders as in brain-mcp.service.
+[Unit]
+Description=Brain condensation detector - find outdated, overlapping and accreted notes
+After=network.target
+OnFailure=g-alert@%n.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@REPO@
+Environment=BRAIN_ROOT=@BRAIN_ROOT@
+EnvironmentFile=-@REPO@/voice/.env
+ExecStart=@REPO@/.venv/bin/python -m g_brain.condense

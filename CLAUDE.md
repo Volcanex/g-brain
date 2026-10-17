@@ -87,7 +87,8 @@ source .env   # GITHUB_TOKEN, BRAIN_ROOT
 Managed by systemd. Restart with `systemctl restart brain-mcp`. One process serves both faces: `/mcp` (agents, via the cloudflared tunnel) and `/api/*` (web UIs, via nginx at the instance's API hostname).
 
 `deploy/systemd/` holds example units for a new install: the brain host, voice, the
-probes and reminders with their timers, and the `g-alert@` failure pager. They use the
+probes and reminders with their timers, the `g-alert@` failure pager, and the timed sweeps
+(condense, gmap, miner, todo expiry, vault sync, verify). They use the
 package module names and `@NAME@` placeholders, which each file's header explains. An
 instance that already runs older copies with real paths should not install these over them.
 

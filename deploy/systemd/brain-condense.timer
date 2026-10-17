@@ -1,0 +1,9 @@
+[Unit]
+Description=Scan the brain for condensation candidates daily
+
+[Timer]
+OnCalendar=*-*-* 07:35:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

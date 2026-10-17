@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily brain nerves/lineage sync
+
+[Timer]
+OnCalendar=05:40
+Persistent=true
+
+[Install]
+WantedBy=timers.target

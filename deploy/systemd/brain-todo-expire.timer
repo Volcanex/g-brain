@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily brain TODO expiry sweep
+
+[Timer]
+OnCalendar=*-*-* 07:25:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

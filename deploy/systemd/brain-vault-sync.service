@@ -1,0 +1,15 @@
+# Example unit for the vault sync. brain-vault-sync.timer runs it every 10 minutes, as the
+# account that owns the vault. Placeholders as in brain-mcp.service, plus:
+#   @HOME@  that account's home directory
+[Unit]
+Description=Sync the brain vault with its git remote
+After=network-online.target
+Wants=network-online.target
+OnFailure=g-alert@%n.service
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+Environment=HOME=@HOME@
+ExecStart=@REPO@/sync_vault.sh

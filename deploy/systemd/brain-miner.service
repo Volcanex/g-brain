@@ -1,0 +1,19 @@
+# Example unit for the session miner. brain-miner.timer runs it every 6 hours. It runs as
+# root, whose claude login interactive use keeps fresh. Placeholders as in brain-mcp.service,
+# plus:
+#   @REMOTE@  a second host whose transcripts are staged first; drop the ExecStartPre line
+#             when there is none
+[Unit]
+Description=Brain miner - distil finished Claude session transcripts into brain notes
+After=network-online.target
+Wants=network-online.target
+OnFailure=g-alert@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+Environment=BRAIN_ROOT=@BRAIN_ROOT@
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Stage @REMOTE@'s transcripts first; "-" so it being unreachable never blocks mining here.
+ExecStartPre=-/usr/bin/rsync -az --timeout=30 --include=*/ --include=*.jsonl --exclude=* @REMOTE@:.claude/projects/ /root/.cache/brain-miner/@REMOTE@/
+ExecStart=@REPO@/.venv/bin/python -m g_brain.miner --limit 3

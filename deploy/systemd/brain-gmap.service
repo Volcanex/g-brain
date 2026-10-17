@@ -1,0 +1,15 @@
+# Example unit for the L3/L4 sync. brain-gmap.timer runs it daily, and it crawls repo
+# CLAUDE.md files and lineage from GitHub. Placeholders as in brain-mcp.service, plus:
+#   @INSTANCE@  the instance checkout, whose .env passport holds GITHUB_TOKEN
+[Unit]
+Description=Brain L3/L4 sync - crawl repo CLAUDE.md and lineage from GitHub
+After=network-online.target
+OnFailure=g-alert@%n.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@REPO@
+Environment=BRAIN_ROOT=@BRAIN_ROOT@
+EnvironmentFile=@INSTANCE@/.env
+ExecStart=@REPO@/.venv/bin/python -m g_brain.gmap
