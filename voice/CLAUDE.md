@@ -80,3 +80,16 @@ MCP tools use.
   note bodies (MVP). Upgrade path: basic-memory at 127.0.0.1:8765.
 - Conversation history survives restarts: rehydrated from the JSONL transcript
   in `VOICE_TRANSCRIPT_DIR` on first access per sender.
+- Talk (spoken turns): `POST /talk` streams NDJSON, one sentence per line as it
+  closes (`talk.py`), and `POST /tts` turns one sentence into WAV through
+  `voice-tts.service`, warm Kokoro-82M int8 on CPU at 127.0.0.1:8078
+  (`tts_server.py`, own venv and model files in `~gabriel/.local/share/voice-tts`,
+  MemoryMax 700M, about 350 MB resident). The browser side is the talk card on
+  gcommand's `/voice` page: Web Speech recognition, barge-in, one TTS call per
+  sentence. Short messages with no request words skip the tool schema; the
+  first clause of a reply goes out alone so audio starts sooner. To swap in
+  Sesame CSM-1B, replace only the voice-tts service: same `/tts` contract, a GPU
+  host, and the last few turns of audio passed as context.
+- Telnyx 10038 covers the whole WhatsApp API on this account (reads included),
+  so no other endpoint gets a reply out. `VOICE_NTFY_FALLBACK=1` pushes refused
+  owner replies to ntfy instead.

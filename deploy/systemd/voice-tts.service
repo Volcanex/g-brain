@@ -1,0 +1,21 @@
+[Unit]
+Description=Brain Voice TTS: warm Kokoro (CPU) for the talk page
+After=network.target
+
+[Service]
+User=gabriel
+Group=gabriel
+WorkingDirectory=/home/gabriel/g-brain
+Environment=VOICE_TTS_DIR=/home/gabriel/.local/share/voice-tts
+Environment=VOICE_TTS_THREADS=3
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/gabriel/.local/share/voice-tts/venv/bin/python /home/gabriel/g-brain/voice/tts_server.py
+Restart=on-failure
+RestartSec=10
+Nice=5
+CPUQuota=300%
+MemoryHigh=550M
+MemoryMax=700M
+
+[Install]
+WantedBy=multi-user.target

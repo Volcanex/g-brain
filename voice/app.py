@@ -3,18 +3,24 @@
   GET  /webhook  liveness (Telnyx has no GET handshake; returns ok)
   POST /webhook  inbound messages (Ed25519-verified, sender-allowlisted)
   GET  /health   readiness + which creds are still missing
+  POST /talk     spoken turn, NDJSON stream of sentences (localhost, talk page)
+  POST /tts      one sentence to WAV via the warm Kokoro service (localhost)
 
 Run: uvicorn voice.app:app --host 127.0.0.1 --port 8077  (from the repo root)
 """
 import json
 import logging
+import os
 import sys
+
+import httpx
 
 import brain_alerts
 from fastapi import BackgroundTasks, FastAPI, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import agent, config, whatsapp
+from . import agent, config, talk, whatsapp
 from .health import deep_health
 
 log = logging.getLogger("voice")
@@ -71,6 +77,50 @@ async def chat(body: ChatIn):
         log.exception("chat failed")
         reply = f"(error: {type(e).__name__}: {e})"
     return {"reply": reply}
+
+
+class TalkIn(BaseModel):
+    message: str
+    session: str = "talk"
+
+
+@app.post("/talk")
+def talk_turn(body: TalkIn):
+    """Spoken turn for the talk page: one JSON object per line, a sentence as
+    soon as it closes. Localhost only, like /chat; gcommand gates it."""
+    def lines():
+        try:
+            for ev in talk.stream_turn(body.session, body.message):
+                yield json.dumps(ev) + "\n"
+        except Exception as e:
+            log.exception("talk failed")
+            yield json.dumps({"t": "error", "error": f"{type(e).__name__}: {e}"}) + "\n"
+    return StreamingResponse(lines(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+TTS_URL = os.environ.get("VOICE_TTS_URL", "http://127.0.0.1:8078")
+
+
+class TtsIn(BaseModel):
+    text: str
+    voice: str | None = None
+
+
+@app.post("/tts")
+async def tts(body: TtsIn):
+    """One sentence to WAV through voice-tts.service (warm Kokoro on CPU)."""
+    payload = {"text": body.text[:400]}
+    if body.voice:
+        payload["voice"] = body.voice
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(f"{TTS_URL}/tts", json=payload)
+    except httpx.HTTPError as e:
+        return Response(status_code=502, content=f"tts unreachable: {type(e).__name__}")
+    return Response(content=r.content, status_code=r.status_code,
+                    media_type=r.headers.get("content-type", "audio/wav"),
+                    headers={"X-Synth-Ms": r.headers.get("x-synth-ms", "")})
 
 
 # A reply that never goes out looks like silence on the phone, so it pages
