@@ -31,6 +31,8 @@ VALID_PRIORITIES = {"P0", "P1", "P2", "P3"}
 # means it mattered and did not happen. Keeping them apart is the difference
 # between a list you can learn from and one that quietly forgets.
 VALID_STATUSES = {"open", "done", "failed", "blocked", "cancelled", "expired"}
+# The statuses that close a todo by hand. Setting one stamps `resolved_on`.
+RESOLVED_STATUSES = {"done", "failed", "cancelled"}
 
 # How long an open TODO stays live before the sweep retires it. Most TODOs
 # here are voice-captured reminders ("remind me to X"), which are perishable:
@@ -380,6 +382,7 @@ def _serialize(slug: str, post: frontmatter.Post) -> dict[str, Any]:
         "rrule": md.get("rrule") or None,
         "location": md.get("location") or None,
         "expires": md.get("expires") or None,
+        "resolved_on": str(md["resolved_on"]) if md.get("resolved_on") else None,
         "body": post.content,
     }
     for _k in ("due", "expires"):
@@ -585,6 +588,17 @@ def _update(slug: str, fields: dict[str, Any]) -> dict[str, Any]:
         if fields["status"] not in VALID_STATUSES:
             raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
 
+    # Closing a todo records the day it was closed. The calendar needs it: a
+    # late thing closed today shows struck through on today, and from tomorrow
+    # lives only on its own date. Without the stamp "closed this morning" and
+    # "closed a month ago" look the same.
+    new_status = fields.get("status")
+    if new_status and new_status != post.metadata.get("status"):
+        if new_status in RESOLVED_STATUSES:
+            fields["resolved_on"] = _today()
+        else:
+            post.metadata.pop("resolved_on", None)
+
     for k, v in fields.items():
         if v is None or (k in ("urgent", "vital") and v is False):
             post.metadata.pop(k, None)
@@ -765,10 +779,11 @@ def occurrences(date_from: str, date_to: str, status: str = "open") -> list[dict
     hi = dt.date.fromisoformat(date_to)
     horizon = dt.datetime.combine(hi, dt.time(23, 59))
     out = []
-    # "live" is open plus done: the calendar has to keep showing what you
-    # ticked off, or the day empties itself as you work through it and you
-    # lose the record of having done anything.
-    wanted = {"open", "done", "failed"} if status == "live" else None
+    # "live" is open plus everything closed by hand: the calendar has to keep
+    # showing what you ticked off, or the day empties itself as you work
+    # through it and you lose the record of having done anything. Cancelled
+    # is in so a late thing you dropped can stay on its own day as missed.
+    wanted = {"open", "done", "failed", "cancelled"} if status == "live" else None
     today = dt.date.today()
     carried = []
     for slug, post in _filter(_iter_todos(), None if wanted else status, None, None, None):
@@ -779,6 +794,24 @@ def occurrences(date_from: str, date_to: str, status: str = "open") -> list[dict
         failed_dates = set(t["failed_dates"])
         note_done = t["status"] == "done"
         note_failed = t["status"] == "failed"
+        note_dropped = t["status"] == "cancelled"
+        if note_dropped and t.get("rrule"):
+            continue  # a dropped habit has no days left to show
+        resolved_on = t["resolved_on"]
+
+        def _carries(when):
+            # Open work comes back onto today until it is closed. Closed work
+            # comes back only on the day it was closed, struck through, so the
+            # day you are looking at still shows what you just dealt with.
+            return when < today and (t["status"] == "open"
+                                     or resolved_on == today.isoformat())
+
+        def _on_own_day(when):
+            # A dropped thing stays on its date, marked missed, only if it was
+            # already late when it was dropped. Dropping a plan before its day
+            # means it never was going to happen, which is not a miss.
+            return not note_dropped or bool(resolved_on and resolved_on > when.isoformat())
+
         base = {k: t[k] for k in ("slug", "permalink", "title", "summary",
                                   "category", "priority", "status", "location")}
         # The ladder travels with the occurrence so the calendar can say when
@@ -819,19 +852,21 @@ def occurrences(date_from: str, date_to: str, status: str = "open") -> list[dict
                                 "all_day": all_day, "recurring": True,
                                 "done": note_done or day in done_dates,
                                 "failed": note_failed or day in failed_dates,
+                                "dropped": False,
                                 "late_days": 0, "original_date": None})
             continue
         if start:
             when = start.date()
-            if when < today and t["status"] in ("open", "failed"):
+            if _carries(when):
                 carried.append((t, ladder_for(t, all_day), when,
                                 None if all_day else start.strftime("%H:%M"), all_day))
-            if lo <= when <= hi:
+            if lo <= when <= hi and _on_own_day(when):
                 out.append({**base, "ladder": ladder_for(t, all_day, None, _lead(start)),
                             "date": start.date().isoformat(),
                             "time": None if all_day else start.strftime("%H:%M"),
                             "all_day": all_day, "recurring": False,
-                            "done": note_done, "failed": note_failed,
+                            "done": note_done, "failed": note_failed or note_dropped,
+                            "dropped": note_dropped,
                             "late_days": 0, "original_date": None})
             continue
         if t.get("due"):
@@ -839,24 +874,25 @@ def occurrences(date_from: str, date_to: str, status: str = "open") -> list[dict
                 d = dt.date.fromisoformat(str(t["due"]))
             except ValueError:
                 continue
-            if d < today and t["status"] in ("open", "failed"):
+            if _carries(d):
                 carried.append((t, ladder_for(t, True), d, None, True))
-            if lo <= d <= hi:
+            if lo <= d <= hi and _on_own_day(d):
                 out.append({**base,
                             "ladder": ladder_for(t, True, None, _lead(
                                 dt.datetime.combine(d, dt.time(0, 0)))),
                             "date": d.isoformat(), "time": None,
                             "all_day": True, "recurring": False,
-                            "done": note_done, "failed": note_failed,
+                            "done": note_done, "failed": note_failed or note_dropped,
+                            "dropped": note_dropped,
                             "late_days": 0, "original_date": None})
     # Everything unresolved reappears on today, labelled with how late it is,
     # so the day you are actually looking at holds everything outstanding.
     #
-    # "failed" carries too. It is a record, not a resolution: the thing still
-    # mattered and still has not happened, and a state that made work vanish
-    # from the calendar would be a worse version of the bug this fixes. The
-    # exits are done, rescheduled, or cancelled, and cancelled is the one that
-    # honestly means "this stopped mattering".
+    # Closed work does not carry, except on the day it was closed (see
+    # `_carries`). Failed used to carry forever as "a record, not a
+    # resolution", which left a missed dishwasher from three weeks ago on
+    # every today with no way to clear it but Drop, which then made it vanish
+    # without trace. The record now lives on the thing's own date instead.
     #
     # Recurring todos are deliberately excluded: the next occurrence *is* the
     # carry, and a fortnight of missed walks would bury the real work.
@@ -867,8 +903,10 @@ def occurrences(date_from: str, date_to: str, status: str = "open") -> list[dict
                                      "category", "priority", "status", "location",
                                      "vital", "urgent")},
                 "ladder": ladder, "date": today.isoformat(), "time": time_s,
-                "all_day": all_day, "recurring": False, "done": False,
-                "failed": t["status"] == "failed",
+                "all_day": all_day, "recurring": False,
+                "done": t["status"] == "done",
+                "failed": t["status"] in ("failed", "cancelled"),
+                "dropped": t["status"] == "cancelled",
                 "late_days": (today - when).days,
                 "original_date": when.isoformat(),
             })

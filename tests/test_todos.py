@@ -189,12 +189,43 @@ def test_carry_forward():
     rows = {r["slug"]: r for r in
             B.occurrences(today.isoformat(), today.isoformat(), "live")}
     check("open work carries", rows["carry-open"]["late_days"], 5)
-    check("failed work carries too", rows["carry-failed"]["late_days"], 5)
-    check("failed keeps its flag when carried", rows["carry-failed"]["failed"], True)
+    check("failed work does not carry", "carry-failed" in rows, False)
     check("done work does not carry", "carry-done" in rows, False)
     check("cancelled work does not carry", "carry-cancelled" in rows, False)
     check("carried rows name their real date",
           rows["carry-open"]["original_date"], old)
+
+
+def test_closed_today_shows_struck_on_today():
+    """THE BUG (live, Sep 2026): "Do the dishwasher" was marked did-not-happen
+    and still sat on every today, 19 days late, while Drop made things vanish
+    without trace. Closed work shows on today only on the day it was closed,
+    and a late thing that was dropped stays on its own date as missed."""
+    today = dt.date.today()
+    old = (today - dt.timedelta(days=5)).isoformat()
+    ahead = (today + dt.timedelta(days=3)).isoformat()
+    for slug, status in (("cl-done", "done"), ("cl-drop", "cancelled")):
+        make(slug, due=old, category="chore")
+        B._update(slug, {"status": status})
+    make("cl-plan", due=ahead, category="chore")
+    B._update("cl-plan", {"status": "cancelled"})
+    make("cl-stale", due=old, category="chore", status="cancelled",
+         resolved_on=(today - dt.timedelta(days=1)).isoformat())
+
+    on_today = {r["slug"]: r for r in
+                B.occurrences(today.isoformat(), today.isoformat(), "live")}
+    check("done today shows on today", on_today["cl-done"]["done"], True)
+    check("dropped today shows on today", on_today["cl-drop"]["dropped"], True)
+    check("dropped today is struck as missed", on_today["cl-drop"]["failed"], True)
+    check("dropped yesterday is gone from today", "cl-stale" in on_today, False)
+
+    on_old = {r["slug"]: r for r in B.occurrences(old, old, "live")}
+    check("late drop stays on its own day", on_old["cl-drop"]["failed"], True)
+    on_ahead = {r["slug"] for r in B.occurrences(ahead, ahead, "live")}
+    check("a plan dropped before its day leaves no trace", "cl-plan" in on_ahead, False)
+
+    B._update("cl-drop", {"status": "open"})
+    check("reopening clears the stamp", B._serialize("cl-drop", B._load("cl-drop"))["resolved_on"], None)
 
 
 def test_recurring_does_not_carry():
