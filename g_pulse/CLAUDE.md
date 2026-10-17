@@ -12,7 +12,8 @@ that stays true goes to the corpus, a dated one to todos.
 - `inlets/` at the repo root belongs to this component. Inlets bring outside data in
   (Gmail, recurring charges) and never write the other way.
 - `pulse` at the repo root is the shell wrapper: `pulse inlets`, `pulse show <id>`,
-  `pulse brief`.
+  `pulse brief`, `pulse note`, `pulse record`. On h it is linked as `/usr/local/bin/pulse`
+  (`ln -s /home/gabriel/brain-tools/pulse /usr/local/bin/pulse`): pulse cron agents call it by name.
 
 ## Rules
 - Imports g-todos, g-spine and `g_config`. It reads the spine's `status/snapshot.json` as a
