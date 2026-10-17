@@ -22,7 +22,7 @@ until the table changes with it.
 | g-pulse | The live layer, what is true now: the pulse page, inlet records, briefs, the pantry, and the inlets that bring outside data in | `g_pulse/`, `inlets/`, `pulse` | `inlet-subs.timer` and `pulse-cron-dispatch.timer` (both defined in g-env-linux) | g-todos, g-spine, config |
 | g-brain corpus | The long-term notes: versioned writes, indexes, the reference graph, sources, code search, the verify and condense sweeps, nerves and lineage from GitHub, the session miner, vault sync | `g_brain/` (not the host files), `sync_vault.sh` | `brain-vault-sync`, `brain-gmap`, `brain-miner`, `brain-verify` and `brain-condense` timers, and the crontab's `brain_refs.py all` | g-spine, config, and only `append_page` and `PAGE_PATH` from g-pulse |
 | g-brain host | The one app on :8766. `/mcp` serves agents (FastMCP, OAuth, Access) and `/api` serves web UIs. It mounts the tools of every other component | `g_brain/server.py`, `api.py`, `oauth.py`, `access.py`, `surface.py` | `brain-mcp.service` | everything |
-| g-voice | The WhatsApp and web assistant. It calls the corpus, todos and pulse in process rather than through the MCP | `voice/` | `voice.service` | g-brain corpus, g-todos, g-pulse, config |
+| g-voice | The WhatsApp and web assistant. It calls the corpus, todos and pulse in process rather than through the MCP | `voice/` | `voice.service` | g-brain corpus, g-todos, g-pulse, g-spine, config |
 
 Five private todos names are still used from g-pulse until g-todos grows a public API. They
 are listed in `ALLOWLIST` in the boundary test, which fails when an entry stops being used.

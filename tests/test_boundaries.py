@@ -35,7 +35,7 @@ ALLOWED = {
     "todos": {"spine", "config"},
     "pulse": {"todos", "spine", "config"},
     "brain": {"spine", "config", "pulse"},
-    "voice": {"brain", "todos", "pulse", "config"},
+    "voice": {"brain", "todos", "pulse", "spine", "config"},
     "host": {"config", "spine", "todos", "pulse", "brain", "voice"},
 }
 
