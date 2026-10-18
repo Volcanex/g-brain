@@ -2,9 +2,8 @@
 
 An AST scan maps every tracked module outside tests/ to a component and checks each
 import against ALLOWED. An underscored name reached across components fails unless it
-is in ALLOWLIST, which holds the todos privates that pulse still uses until todos grows
-a public API (split step 3c). A component can only move to its own repo once the
-allowlist is empty.
+is in ALLOWLIST. All todos consumers now use its public API. A component can only
+move to its own repo once the allowlist is empty.
 """
 import ast
 import subprocess
@@ -45,13 +44,7 @@ NARROW = {("brain", "pulse"): {"append_page", "PAGE_PATH"}}
 
 # (importing module, "target module.private name"). Remove entries as todos gains
 # public names; an entry nothing uses any more fails the test.
-ALLOWLIST = {
-    ("g_pulse.pulse", "brain_todos._iter_todos"),
-    ("g_pulse.pulse", "brain_todos._serialize"),
-    ("inlets.subs", "brain_todos._load"),
-    ("inlets.subs", "brain_todos._save"),
-    ("inlets.subs", "brain_todos._today"),
-}
+ALLOWLIST = set()
 
 
 def _tracked_modules():

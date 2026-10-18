@@ -8,6 +8,8 @@ Contract (mirrors the pulse): read the cortex freely; write L6 todos directly;
 durable note changes go through propose_commit -> (human says yes) -> execute_commit.
 The Voice must never execute a durable commit without an explicit in-chat 'yes'.
 """
+from uuid import uuid4
+
 import brain_reader
 import brain_todos
 import brain_commit
@@ -54,9 +56,12 @@ def list_todos(status="open", priority=None, due_before=None):
 
 
 def create_todo(title, priority="P2", due=None, body=None, relates_to=None, category=None, remind_min=None,
-                start=None, end=None, all_day=None, rrule=None, location=None):
-    """Write an L6 todo directly, the unguarded layer."""
+                start=None, end=None, all_day=None, rrule=None, location=None,
+                session_id=None, turn_id=None):
+    """Record an owner request with an originating voice event id."""
+    event_id = turn_id or session_id or str(uuid4())
     return brain_todos.create_todo(title=title, priority=priority, due=due,
+                                   requester="gabriel", composer="agent", source=f"voice:{event_id}",
                                    relates_to=relates_to, body=body, category=category, remind_min=remind_min,
                                    start=start, end=end, all_day=all_day, rrule=rrule, location=location)
 

@@ -40,38 +40,22 @@ def _fetch():
     return json.loads(out.stdout)
 
 
-def _upsert(slug, fields, body):
-    """Write a todo at a known slug, leaving a done/cancelled one alone.
+def _provenance(source_id):
+    return {"requester": "inlets.subs", "composer": "inlets.subs", "source": f"gfin-sub:{source_id}"}
 
-    Reopening something the owner has closed is the one behaviour that would make
-    this inlet a nuisance rather than a tool, so status is never written back
-    to open here.
-    """
+
+def _upsert(slug, fields, body):
+    """Reconcile subscriptions, preserving every manually closed state."""
     try:
-        post = brain_todos._load(slug)
+        post = brain_todos.get(slug)
         status = str(post.metadata.get("status") or "open")
-        if status == "expired":
-            post["status"] = "open"
-            action = "reopened"
-        elif status != "open":
+        if status not in {"open", "expired"}:
             return "skipped-closed"
-        else:
-            action = "updated"
+        action = "reopened" if status == "expired" else "updated"
     except FileNotFoundError:
-        import frontmatter
-        post = frontmatter.Post(content="")
-        post["kind"] = "todo"
-        post["permalink"] = f"brain/todos/{slug}"
-        post["status"] = "open"
-        post["created"] = brain_todos._today()
         action = "created"
-    for k, v in fields.items():
-        if v is None:
-            post.metadata.pop(k, None)
-        else:
-            post[k] = v
-    post.content = body
-    brain_todos._save(slug, post)
+    source = _provenance(slug.removeprefix("sub-"))
+    brain_todos.upsert(slug, {**fields, "status": "open"}, body, source, source["source"])
     return action
 
 
@@ -85,14 +69,15 @@ def run():
         if sub.get("lapsed"):
             counts["lapsed"] = counts.get("lapsed", 0) + 1
             try:
-                post = brain_todos._load(slug)
+                post = brain_todos.get(slug)
             except FileNotFoundError:
                 continue
             if str(post.metadata.get("status") or "open") == "open":
-                post["status"] = "expired"
-                post.content = (f"Lapsed: no charge since {sub['last_charged']}, so no "
-                                f"reminder. Reopens if the charges come back.\n")
-                brain_todos._save(slug, post)
+                source = _provenance(sub["id"])
+                brain_todos.upsert(slug, {"status": "expired"},
+                                   f"Lapsed: no charge since {sub['last_charged']}, so no "
+                                   "reminder. Reopens if the charges come back.",
+                                   source, source["source"])
             continue
 
         if sub["status"] == "cancel":
