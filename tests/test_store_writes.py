@@ -116,3 +116,16 @@ def test_root_writer_leaves_store_owned_by_its_user(tmp_path):
         atomic_write(store / "record.md", "text")
     assert (store / "record.md").stat().st_uid == 65534
     assert (store / ".lock").stat().st_uid == 65534
+
+
+def test_atomic_write_never_touches_the_process_umask(tmp_path, monkeypatch):
+    import os
+    from g_todos import storage
+
+    def forbidden(mask):
+        raise AssertionError("atomic_write changed the process umask")
+
+    monkeypatch.setattr(storage.os, "umask", forbidden)
+    storage.atomic_write(tmp_path / "fresh.md", "new")
+    assert (tmp_path / "fresh.md").read_text() == "new"
+    assert [p.name for p in tmp_path.iterdir()] == ["fresh.md"]

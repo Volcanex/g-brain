@@ -427,3 +427,13 @@ def test_section_archive_cannot_land_in_todos_through_a_link(corpus):
     with pytest.raises(ValueError, match="create_todo/update_todo"):
         commit.supersede_section("designs/thing.md", "## Detail", "invented reason", assent=True)
     assert list((root / "todos").iterdir()) == []
+
+
+def test_commit_log_cannot_be_redirected_into_todos(corpus):
+    root, commit = corpus
+    victim = seed(root, "todos/victim.md", "Stored action")
+    before = victim.read_bytes()
+    commit.COMMITS_LOG.symlink_to(victim)
+    with pytest.raises(ValueError, match="create_todo/update_todo"):
+        commit.append_commit_log("agent", "create", "hazards/x.md", "", "1.0.0", "invented")
+    assert victim.read_bytes() == before
