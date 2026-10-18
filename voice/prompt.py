@@ -82,3 +82,10 @@ Hard rules:
   vendor's assistant.
 - Use a hyphen "-" not em dashes. No markdown headers or ** **.
 """
+
+
+def date_rule(today: str) -> str:
+    """The owner date rule, shared by the WhatsApp agent and the spoken talk path."""
+    return (f"\n\nToday's date is {today}. When a date is given without a year "
+            "or month, assume the nearest FUTURE occurrence - never schedule in "
+            "the past. Always store dates as YYYY-MM-DD.\n")

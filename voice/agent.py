@@ -14,7 +14,7 @@ import httpx
 
 from . import config, tools, transcript
 from .brief import build_brief
-from .prompt import GUEST_SYSTEM, SYSTEM
+from .prompt import GUEST_SYSTEM, SYSTEM, date_rule
 
 log = logging.getLogger("voice")
 
@@ -168,9 +168,7 @@ def handle(sender: str, text: str, owner: bool = True, images=None) -> str:
 
     if owner:
         today = datetime.date.today().isoformat()
-        dateline = (f"\n\nToday's date is {today}. When a date is given without a year "
-                    "or month, assume the nearest FUTURE occurrence - never schedule in "
-                    "the past. Always store dates as YYYY-MM-DD.\n")
+        dateline = date_rule(today)
         # Tell it what it is actually running on, so "what model are you?" has a
         # truthful answer available instead of a guess from training data.
         modelline = f"\nYou are currently running on the model: {config.MODEL}\n"

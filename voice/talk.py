@@ -23,7 +23,7 @@ import httpx
 
 from . import agent, config, transcript
 from .brief import build_brief
-from .prompt import SYSTEM
+from .prompt import SYSTEM, date_rule
 
 SPOKEN = """
 
@@ -52,6 +52,36 @@ RATE_TURNS = 6
 RATE_WINDOW = 60.0
 SLOW_DOWN = "Slow down a moment, give me a few seconds before the next one."
 _RECENT: dict[str, deque] = {}
+
+
+# execute_commit on a spoken turn needs its own fresh confirmation: a plan id that
+# propose_commit returned on an EARLIER turn of this session, and the current user
+# turn being nothing but an explicit yes. A misheard word cannot carry it.
+_CONFIRM = re.compile(
+    r"(yes|yes please|yes,? (go ahead|do it|commit it|save it|write it|confirm(ed)?)|"
+    r"go ahead|do it|confirm(ed)?|commit it|save it|write it)[.!]?", re.I)
+_PROPOSED: dict[str, dict[str, int]] = {}   # sender -> {plan_id: turn proposed on}
+_TURN: dict[str, int] = {}
+
+
+def is_confirmation(text: str) -> bool:
+    return bool(_CONFIRM.fullmatch(" ".join((text or "").split())))
+
+
+def _commit_gate(sender: str, args_json, text: str):
+    """None if execute_commit may run on this spoken turn, else an error dict."""
+    try:
+        plan_id = (json.loads(args_json or "{}") or {}).get("plan_id")
+    except (json.JSONDecodeError, AttributeError):
+        plan_id = None
+    proposed = _PROPOSED.get(sender, {})
+    if not plan_id or plan_id not in proposed:
+        return {"error": "no plan with that id was proposed on this call; call propose_commit first"}
+    if proposed[plan_id] >= _TURN.get(sender, 0):
+        return {"error": "say what you will write and wait for an explicit yes on the next turn"}
+    if not is_confirmation(text):
+        return {"error": "the last thing said was not a clear yes; ask again and wait"}
+    return None
 
 
 def _rate_limited(sender: str, now: float | None = None) -> bool:
@@ -162,12 +192,13 @@ def stream_turn(sender: str, text: str):
     if sender not in agent._HISTORY:
         agent._HISTORY[sender] = transcript.load_tail(sender, agent._MAX_TURNS)
     history = agent._HISTORY[sender]
+    _TURN[sender] = _TURN.get(sender, 0) + 1
     history.append({"role": "user", "content": text})
     transcript.append(sender, "user", text)
 
     small = is_small_talk(text)
     today = datetime.date.today().isoformat()
-    system = (SYSTEM + f"\n\nToday's date is {today}.\nYou are currently running on the model: {config.MODEL}\n"
+    system = (SYSTEM + date_rule(today) + f"You are currently running on the model: {config.MODEL}\n"
               + "\n## Right now (your short-term memory)\n" + build_brief() + SPOKEN)
     messages = [{"role": "system", "content": system}] + history[-agent._MAX_TURNS:]
 
@@ -197,7 +228,13 @@ def stream_turn(sender: str, text: str):
             name = call["function"]["name"]
             tools_used.append(name)
             yield {"t": "tool", "name": name, "ms": ms()}
-            result = agent._run_tool(name, call["function"].get("arguments"))
+            args = call["function"].get("arguments")
+            gate = _commit_gate(sender, args, text) if name == "execute_commit" else None
+            result = gate or agent._run_tool(name, args)
+            if name == "propose_commit" and isinstance(result, dict) and result.get("plan_id"):
+                _PROPOSED.setdefault(sender, {})[result["plan_id"]] = _TURN[sender]
+            elif name == "execute_commit" and gate is None:
+                _PROPOSED.get(sender, {}).pop(json.loads(args or "{}").get("plan_id"), None)
             err = result.get("error") if isinstance(result, dict) else None
             agent.log.info("tool sender=%s name=%s args=%s -> %s", sender, name,
                            str(call["function"].get("arguments"))[:300], f"ERROR {err}" if err else "ok")

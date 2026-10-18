@@ -85,3 +85,80 @@ def test_rate_limit_answers_without_model(talk, monkeypatch):
     assert len(calls) == talk_mod.RATE_TURNS
     assert evs[0]["text"] == talk_mod.SLOW_DOWN
     assert evs[-1]["limited"] is True
+
+
+def test_talk_and_agent_share_the_date_rule(talk, monkeypatch):
+    talk_mod, agent = talk
+    from voice import prompt
+    import inspect
+    rule = prompt.date_rule("2026-10-18")
+    assert "nearest FUTURE occurrence" in rule and "YYYY-MM-DD" in rule
+    assert "date_rule(today)" in inspect.getsource(agent.handle)
+    seen = []
+
+    def fake(messages, use_tools):
+        seen.append(messages[0]["content"])
+        yield "text", "Hi."
+        yield "calls", []
+    monkeypatch.setattr(talk_mod, "_stream_model", fake)
+    monkeypatch.setattr(talk_mod, "_RECENT", {})
+    list(talk_mod.stream_turn("date-probe", "hey there"))
+    import datetime
+    assert prompt.date_rule(datetime.date.today().isoformat()) in seen[0]
+
+
+def test_confirmation_phrases():
+    from voice.talk import is_confirmation
+    for ok in ["yes", "Yes.", "yes please", "go ahead", "yes, do it", "confirm"]:
+        assert is_confirmation(ok), ok
+    for bad in ["yes but change the title", "no", "yesterday", "yes no", "", "what?"]:
+        assert not is_confirmation(bad), bad
+
+
+def _commit_rounds(plan_id):
+    return [("calls", [{"id": "e1", "type": "function", "function": {
+        "name": "execute_commit", "arguments": '{"plan_id": "%s", "operations": []}' % plan_id}}]),
+        ("text", "Done."), ("calls", [])]
+
+
+def test_execute_commit_needs_proposal_then_fresh_yes(talk, monkeypatch):
+    talk_mod, agent = talk
+    monkeypatch.setattr(talk_mod, "_RECENT", {})
+    monkeypatch.setattr(talk_mod, "_PROPOSED", {})
+    monkeypatch.setattr(talk_mod, "_TURN", {})
+    ran = []
+
+    def run(name, args):
+        ran.append(name)
+        return {"plan_id": "p1"} if name == "propose_commit" else {"ok": True}
+    monkeypatch.setattr(agent, "_run_tool", run)
+
+    def play(text, rounds):
+        it = iter([rounds[:1], rounds[1:]])
+        monkeypatch.setattr(talk_mod, "_stream_model", lambda m, use_tools: iter(next(it)))
+        list(talk_mod.stream_turn("c-probe", text))
+
+    # Unknown plan id: blocked.
+    play("yes", _commit_rounds("p1"))
+    assert ran == []
+    # Propose and execute in the same turn: blocked.
+    rounds = iter([
+        [("calls", [{"id": "p", "type": "function", "function": {
+            "name": "propose_commit", "arguments": '{"summary": "add note"}'}}])],
+        [("calls", [{"id": "e", "type": "function", "function": {
+            "name": "execute_commit", "arguments": '{"plan_id": "p1", "operations": []}'}}])],
+        [("text", "Shall I write it?"), ("calls", [])]])
+    monkeypatch.setattr(talk_mod, "_stream_model", lambda m, use_tools: iter(next(rounds)))
+    list(talk_mod.stream_turn("c-probe", "add a note about the boiler"))
+    assert ran == ["propose_commit"]
+    # Next turn is not a clear yes: blocked.
+    play("yes but change the title", _commit_rounds("p1"))
+    assert ran == ["propose_commit"]
+    # Wrong id with a clear yes: blocked.
+    play("yes", _commit_rounds("p2"))
+    assert ran == ["propose_commit"]
+    # Clear yes on a later turn: runs once, then the id is spent.
+    play("yes, go ahead", _commit_rounds("p1"))
+    assert ran == ["propose_commit", "execute_commit"]
+    play("yes", _commit_rounds("p1"))
+    assert ran == ["propose_commit", "execute_commit"]
