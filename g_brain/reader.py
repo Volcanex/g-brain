@@ -114,7 +114,7 @@ def _parse_note(md: Path) -> Note | None:
 
 
 @lru_cache(maxsize=1)
-def _all_notes_cached(_mtime_signature: int) -> list[Note]:
+def _all_notes_cached(_signature: tuple) -> list[Note]:
     notes: list[Note] = []
     for md in _iter_md_files():
         n = _parse_note(md)
@@ -124,16 +124,17 @@ def _all_notes_cached(_mtime_signature: int) -> list[Note]:
 
 
 def all_notes() -> list[Note]:
-    """All notes in the brain. Caches per BRAIN_ROOT mtime so repeat
-    reads are cheap; cache invalidates whenever any file changes."""
-    sig = 0
+    """Cache parsed notes by vault, file paths, mtimes and sizes."""
+    signature = []
     if BRAIN_ROOT.exists():
-        for md in BRAIN_ROOT.rglob("*.md"):
+        for md in sorted(BRAIN_ROOT.rglob("*.md")):
             try:
-                sig ^= int(md.stat().st_mtime_ns)
+                stat = md.stat()
+                signature.append((md.relative_to(BRAIN_ROOT).as_posix(),
+                                  stat.st_mtime_ns, stat.st_size))
             except OSError:
                 pass
-    return _all_notes_cached(sig)
+    return _all_notes_cached((str(BRAIN_ROOT.resolve()), tuple(signature)))
 
 
 def get_note(path: str) -> Note | None:

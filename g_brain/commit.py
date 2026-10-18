@@ -45,7 +45,7 @@ def _today() -> str:
 
 
 # ----------------------------------------------------------------------
-# Canonical layout. Kinds map 1:1 to plural top-level directories.
+# Canonical layout. Legacy kinds remain available to the commit machinery.
 #
 # The map is enforced on every write: basic-memory's habit of dropping
 # notes into singular `reference/` / `design/` / ad-hoc `project/` is
@@ -56,12 +56,22 @@ KIND_DIRS: dict[str, str] = {
     "design":    "designs",
     "finding":   "findings",
     "idea":      "ideas",
+    "fact":      "about",
+    "hazard":    "hazards",
     "reference": "references",
     "source":    "sources",
     "log":       "logs",
     "todo":      "todos",
 }
 CANONICAL_DIRS: set[str] = set(KIND_DIRS.values())
+LAYERS = {"design": "design", "idea": "idea", "about": "fact", "hazard": "hazard"}
+_LAYER_HELP = (
+    "Choose layer: design (your own designs), idea (cross-domain ideas no project owns), "
+    "about (facts about Gabriel, preferences, people, decisions and reasons), "
+    "hazard (ops hazards and external quirks). Project canon belongs in repo docs. "
+    "Every-run rules belong as g-levels gates. Dated life commitments go to create_todo, "
+    "machine or agent work to create_ticket, current state to pulse_note."
+)
 
 
 def _validate_target_path(target: str) -> None:
@@ -272,7 +282,8 @@ def propose_commit(summary: str, mode: str = "auto") -> dict:
             "{type, target}. type ∈ {create, edit_minor, edit_patch, "
             "supersede, mark_broken}. "
             "target MUST be '<plural-kind-dir>/<slug>.md', one of: "
-            "designs/, findings/, ideas/, references/, sources/, logs/. "
+            "designs/, ideas/, about/, hazards/, sources/, logs/, todos/ "
+            "(findings/ and references/ for legacy notes). "
             ""
             "FOR create: pass 'body' (full markdown, field name is 'body' "
             "not 'content'); optionally title, kind, frontmatter. Empty body rejected. "
@@ -906,9 +917,8 @@ def review_dependency(note: str, dependency: str, expected_stamp: str,
 # constantly. brain_note is the pulse_note-shaped door onto the same
 # versioned machinery: one call, one fact, no plan_id.
 #
-# It can only create or append. Anything structural (supersede, mark_broken,
-# a major bump) still goes through propose_commit, because those are the
-# writes that can destroy knowledge.
+# It can only create or append. Destructive writes use propose_commit.
+# mark_broken remains available directly because it destroys no knowledge.
 # ----------------------------------------------------------------------
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
@@ -978,27 +988,68 @@ def _derive_summary(text: str) -> str:
     return flat[:200]
 
 
+_BAR_QUESTION = "Would a future agent be worse off without this, and is it recorded nowhere else?"
+# Invented paraphrases score >= 0.571, related distinct facts <= 0.167.
+NEAR_DUPLICATE_THRESHOLD = 0.55
+_RULE_DIRECTIVE = re.compile(
+    r"(?:^|[.!?\n]\s*)(?:[-*#>]+\s*)?(?:always|never|do not|every time)\b"
+    r"|\bmust\b|\b(?:you|agents?|we)\s+(?:should\s+)?(?:always|never)\b",
+    re.I,
+)
+
+
+def _near_duplicates(title: str, text: str) -> list[dict]:
+    """Use the reader cache and condense's tokens, failing open on read errors."""
+    try:
+        from g_brain.condense import _tokens, _jaccard
+        from brain_reader import all_notes
+
+        tokens = _tokens(f"{title} {text}")
+        folders = {KIND_DIRS[kind] for kind in LAYERS.values()}
+        hits = []
+        for note in all_notes():
+            parts = Path(note.path).parts
+            if not parts or parts[0] not in folders:
+                continue
+            if any(p in {"versions", "archive"} for p in parts):
+                continue
+            score = _jaccard(tokens, _tokens(f"{note.title} {note.body}"))
+            if score >= NEAR_DUPLICATE_THRESHOLD:
+                hits.append({"target": f"{note.path}.md", "title": note.title,
+                             "score": round(score, 3)})
+        return sorted(hits, key=lambda hit: (-hit["score"], hit["target"]))[:3]
+    except Exception:  # noqa: BLE001 - a failed duplicate check must never block capture
+        return []
+
+
 @mcp.tool()
 def brain_note(
     text: str,
-    kind: str = "finding",
+    layer: str | None = None,
     target: str | None = None,
     title: str | None = None,
     tags: list[str] | None = None,
     actor: str = "agent",
     summary: str | None = None,
+    *,
+    bar: str | None = None,
+    distinct: bool = False,
+    kind: str | None = None,
 ) -> dict:
-    """Capture one durable fact in the brain. One call, no plan_id, no ceremony.
+    """Capture durable knowledge in a required layer. One call, no plan_id.
 
-    **This is the default write path.** Use it whenever something true-always
-    emerges mid-session: a decision, a finding, a standing fact about how a
-    system works. Do not ask permission for additive captures; that is what
-    this tool is for. (Dated things go to `create_todo`, currently-true things
-    to `pulse_note`, see the routing rule.)
+    Capture freely when a future agent would be worse off without it and it
+    is recorded nowhere else. Project canon goes in repo docs, every-run rules
+    in g-levels gates, dated life commitments in create_todo, machine or agent
+    work in create_ticket, current state in pulse_note.
 
     Args:
       text:   the fact, in markdown. One fact per note.
-      kind:   design | finding | idea | reference | source | log.
+      layer:  required: design (own designs), idea (unowned cross-domain ideas),
+              about (facts about Gabriel), hazard (ops hazards, external quirks).
+      bar:    one-line answer to the capture bar above, required for a new note.
+      distinct: bypass the near-duplicate refusal for a truly separate new note.
+      kind:   deprecated alias accepting design or idea. Use layer instead.
       target: optional existing note to append to (e.g. "designs/g-site.md").
               Omit to let the note be filed by title; if a note with that slug
               already exists, the text is appended to it rather than colliding.
@@ -1010,39 +1061,47 @@ def brain_note(
       actor:  "agent" (default, autonomous capture, lineage A), "human" when
               the owner dictated it verbatim, "ai-auto" for cron-driven writes.
 
-    For supersedes, mark_broken, major bumps or multi-note reasoning, use
-    propose_commit instead. Those are fenced deliberately.
+    Near-duplicates return candidates: append with target= or pass distinct=True.
+    Standing directives get an advisory g-levels hint. Destructive writes use
+    propose_commit, with assent for supersede and transformative edit_major.
+    mark_broken is available directly and does not need assent.
     """
     if not text or not text.strip():
         return {"ok": False, "error": "refusing to write an empty note"}
 
-    if kind == "todo":
-        return {"ok": False, "error": (
-            "todos are not brain notes: anything with a date goes to "
-            "create_todo. See the routing rule."
-        )}
-    if kind not in KIND_DIRS:
-        return {"ok": False, "error": (
-            f"unknown kind {kind!r}. One of: "
-            f"{sorted(k for k in KIND_DIRS if k != 'todo')}"
-        )}
+    if kind is not None:
+        if kind not in {"design", "idea"} or layer not in (None, kind):
+            return {"ok": False, "error": f"kind is deprecated. {_LAYER_HELP}"}
+        layer = kind
+    if layer not in LAYERS:
+        return {"ok": False, "error": f"layer is required. {_LAYER_HELP}"}
+    note_kind = LAYERS[layer]
+    folder = KIND_DIRS[note_kind]
 
     if summary is not None and not summary.strip():
         return {"ok": False, "error": "summary must describe the current whole note"}
+    if bar is not None:
+        bar = bar.strip()
+        if len(bar.splitlines()) > 1:
+            return {"ok": False, "error": f"bar must be one line: {_BAR_QUESTION}"}
 
     note_title = title or _derive_title(text)
 
     if target:
         dest = target if target.endswith(".md") else f"{target}.md"
         if "/" not in dest:
-            dest = f"{KIND_DIRS[kind]}/{dest}"
+            dest = f"{folder}/{dest}"
     else:
-        dest = f"{KIND_DIRS[kind]}/{_slugify(note_title)}.md"
+        dest = f"{folder}/{_slugify(note_title)}.md"
 
     try:
         path = _resolve(dest)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
+    if path.relative_to(BRAIN_ROOT.resolve()).parts[0] != folder:
+        return {"ok": False, "error": f"target must be in {folder}/ for layer={layer}. {_LAYER_HELP}"}
+    if target and not path.is_file():
+        return {"ok": False, "error": "target must name an existing note to append to"}
 
     if path.exists():
         # Appending rather than colliding is what makes this safe to reach
@@ -1055,7 +1114,9 @@ def brain_note(
                             else prior.get("summary", ""))
         fm = {"summary": summary.strip() if summary is not None else
               f"Needs review after new information: {previous_summary or 'read the full note.'}",
-              "summary_needs_review": summary is None}
+              "summary_needs_review": summary is None, "layer": layer, "kind": note_kind}
+        if bar:
+            fm["bar"] = bar
         if summary is None:
             fm["summary_previous"] = previous_summary
         stamp = f"_{_today()}_"
@@ -1069,9 +1130,19 @@ def brain_note(
         result = _apply_op(op, actor)
         action = "appended"
     else:
+        if not bar:
+            return {"ok": False, "error": f"bar is required: {_BAR_QUESTION}"}
+        duplicates = [] if distinct else _near_duplicates(note_title, text)
+        if duplicates:
+            return {"ok": False, "near_duplicates": duplicates, "error": (
+                "Near-duplicate notes found. Thicken with target=<path>, "
+                "or pass distinct=True if this really is separate."
+            )}
         fm: dict[str, Any] = {
             "title": note_title,
-            "kind": kind,
+            "kind": note_kind,
+            "layer": layer,
+            "bar": bar,
             "summary": summary.strip() if summary is not None else _derive_summary(text),
         }
         if tags:
@@ -1080,7 +1151,7 @@ def brain_note(
             "type": "create",
             "target": dest,
             "title": note_title,
-            "kind": kind,
+            "kind": note_kind,
             "frontmatter": fm,
             "body": f"# {note_title}\n\n{text.strip()}\n",
             "reason": "brain_note capture",
@@ -1100,7 +1171,7 @@ def brain_note(
     except Exception as exc:  # noqa: BLE001 - a capture must not fail on indexing
         indexed = f"{type(exc).__name__}: {exc}"
 
-    return {
+    response = {
         "ok": True,
         "action": action,
         "target": dest,
@@ -1110,6 +1181,12 @@ def brain_note(
         "indexed": indexed,
         "summary_needs_review": action == "appended" and summary is None,
     }
+    if _RULE_DIRECTIVE.search(text):
+        response["hint"] = (
+            "A standing rule that should be checked every run belongs as a gate in "
+            "g-levels (glevels, /home/gabriel/g-levels)."
+        )
+    return response
 
 
 @mcp.tool()

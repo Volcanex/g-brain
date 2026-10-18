@@ -67,8 +67,9 @@ PROMPT = """You are the brain's session miner. Below is a distilled Claude Code 
 (host: {host}, project dir: {project}, last active: {when}).
 
 Extract at most 3 facts that are TRUE ALWAYS and worth keeping: a decision made and
-why, a gotcha that cost real time, how a system actually turned out to behave, a dead
-end worth not repeating. The bar is high: routine work, task narration, and anything
+why, an ops hazard or external quirk, an unowned cross-domain idea, or Gabriel's own
+design. Project canon belongs in repo docs and every-run rules in g-levels gates.
+The bar is high: routine work, task narration, and anything
 derivable from the code or git history do NOT qualify. Most sessions yield zero notes;
 ending with none is success. If there are none, write nothing and finish `noop` without
 running any command.
@@ -79,10 +80,12 @@ Otherwise, with ONE bash call, search for each candidate fact (one quoted query 
 
 If a hit already covers a fact, skip it, or thicken that note by giving its path as
 `target`. Then land everything with ONE bash call (one self-contained fact per note,
-absolute dates only, kind is one of design|finding|idea|reference):
+absolute dates only, layer is one of design|idea|about|hazard). For each new note,
+give a one-line bar answer: would a future agent be worse off without this, and is
+it recorded nowhere else? Near-duplicates need target= to thicken the match:
 
     {capture} apply <<'JSON'
-    {{"notes": [{{"text": "...", "kind": "finding", "title": "...", "target": "optional/existing.md"}}],
+    {{"notes": [{{"text": "...", "layer": "hazard", "bar": "specific value and why it exists nowhere else", "title": "..."}}],
      "pulse": "one line on what the user is currently working on, only if this session shows it, else empty"}}
     JSON
 

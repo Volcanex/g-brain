@@ -17,11 +17,9 @@ import g_config
 
 BRAIN_ROOT = g_config.BRAIN_ROOT
 INDEXES_DIR = BRAIN_ROOT / "indexes"
-KIND_DIRS = {"designs", "findings", "ideas", "references", "sources", "logs", "todos"}
 # Display order for master index
-FOLDER_ORDER = ["designs", "findings", "ideas", "references", "sources", "logs", "todos"]
-# Folders where `status: done` notes are hidden from the default index.
-HIDE_DONE_IN = {"todos"}
+FOLDER_ORDER = ["designs", "ideas", "about", "hazards"]
+KIND_DIRS = set(FOLDER_ORDER)
 
 
 def _now_iso() -> str:
@@ -74,9 +72,6 @@ def collect_notes() -> dict[str, list[dict]]:
             title = slug
             status = "active"
             summary = ""
-
-        if top in HIDE_DONE_IN and status == "done":
-            continue
 
         groups[top].append({
             "title": title,
@@ -173,9 +168,6 @@ def write_master_index(groups: dict[str, list[dict]]) -> Path:
 
 def compile_indexes() -> None:
     groups = collect_notes()
-    if not groups:
-        print("no notes found", file=sys.stderr)
-        return
     for folder in FOLDER_ORDER:
         notes = groups.get(folder)
         if not notes:
