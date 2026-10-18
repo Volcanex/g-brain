@@ -15,7 +15,9 @@ The MCP/REST faces are for *remote* agents; the Voice is local. Same codepath th
 MCP tools use.
 
 ## Safety contract
-- Reads the cortex freely; may create L6 todos directly.
+- Reads the cortex freely and creates owner commitments through the shared todo boundary.
+  Voice records `requester="gabriel"`, `composer="agent"` and the originating voice event
+  as source. Machine alerts are refused even for the owner. Expiry is derived on read.
 - **Never** writes a durable note without an explicit in-chat 'yes': the model
   must `propose_commit` (draft), show the owner, then `execute_commit` only on
   confirmation. Enforced by the system prompt, not by code. Keep it that way

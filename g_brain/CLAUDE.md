@@ -20,10 +20,25 @@ checked by `tests/test_boundaries.py`.
 - `brain-mcp.service` runs `uvicorn brain:app`, and `brain` is an alias for `g_brain.server`,
   so the unit did not change. Before restarting it after a change here, list the MCP tools
   and compare them with the previous list: clients see any rename at once.
-- The corpus timers run `python brain_verify.py`, `brain_gmap.py`, `brain_miner.py --limit 3`
-  and `brain_condense.py`, and the crontab runs `brain_refs.py all`. All are aliases at the
-  repo root, so they keep working from any directory.
+- Corpus timers run `python brain_gmap.py` and `brain_miner.py --limit 3`, and the crontab
+  runs `brain_refs.py all`. The root aliases remain available.
+- `review_dependency` records evidence and clears matching stale flags in one versioned
+  write through `verify.resolve_note`. Stale reports and orientation never rewrite notes
+  or send alerts. `python brain_verify.py` can apply legacy evidence and write
+  `status/stale.json`. Only that manual sweep warns on a suspicious full clear.
+- Condensation is computed on read and cached until kept notes, the manifest or the date
+  change. `python brain_condense.py` remains a manual report writer. Neither detector
+  needs a timer.
 - `commit.rebuild_indexes()` runs `python -m brain_index` with its working directory set to
   the repo root, so a write from any caller rebuilds the indexes.
 - Every module reads `BRAIN_ROOT` when it is first imported. Set it before importing, and in
   tests let `tests/conftest.py` point it at a temp dir.
+
+## Captures and host routes
+- `brain_note(text, layer, bar=...)` captures design, idea, about or hazard knowledge.
+  About notes have `kind: fact`. New notes need the one-line value and uniqueness bar.
+  Appends need no bar. Duplicate candidates must name existing appendable Markdown files.
+- The miner's `capture.apply` accepts legacy kinds design, idea, fact and hazard without
+  a bar by supplying a session-transcript bar. Ambiguous legacy kinds are skipped.
+- `create_api()` mounts todos, tickets and pulse routers. The host mounts `brain_todos.mcp`,
+  which registers ticket tools from `g_todos.tickets` as well as owner commitments.

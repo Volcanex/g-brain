@@ -18,15 +18,14 @@ until the table changes with it.
 |---|---|---|---|---|
 | shared config | Says where things live: the data root, state dirs, the `.env` chain, the manifest source. Values are read from the environment when used, not fixed at import | `g_config.py` | none | nothing local |
 | g-spine | Gets alerts to the owner's phone: `send()` to ntfy with dedup, the hook that pages when a unit fails, and the L5 watcher that probes every service and dependency | `g_spine/` | `brain-status.timer`, `g-alert@.service` | config |
-| g-todos | Dated commitments (L6): storage in the vault's `todos/`, recurrence, the reminder ladder, the expiry sweep. Not packaged yet, so it is still flat | `brain_todos.py`, `outlets/` | `brain-todo-expire.timer`, `outlet-remind.timer` | g-spine, config |
-| g-pulse | The live layer, what is true now: the pulse page, inlet records, briefs, the pantry, and the inlets that bring outside data in | `g_pulse/`, `inlets/`, `pulse` | `inlet-subs.timer` and `pulse-cron-dispatch.timer` (both defined in g-env-linux) | g-todos, g-spine, config |
-| g-brain corpus | The long-term notes: versioned writes, indexes, the reference graph, sources, code search, the verify and condense sweeps, nerves and lineage from GitHub, the session miner, vault sync | `g_brain/` (not the host files), `sync_vault.sh` | `brain-vault-sync`, `brain-gmap`, `brain-miner`, `brain-verify` and `brain-condense` timers, and the crontab's `brain_refs.py all` | g-spine, config, and only `append_page` and `PAGE_PATH` from g-pulse |
+| g-todos | Owner commitments in `todos/`, machine work in `tickets/`, provenance, recurrence, reminders and read-time expiry | `brain_todos.py`, `g_todos/`, `outlets/` | `outlet-remind.timer` | g-spine, config |
+| g-pulse | What is true now: the pulse page, inlet records, briefs including `about/` facts, the pantry and outside inlets | `g_pulse/`, `inlets/`, `pulse` | `inlet-subs.timer` and `pulse-cron-dispatch.timer` (both defined in g-env-linux) | g-todos, g-spine, config |
+| g-brain corpus | Durable notes, versioned writes, indexes, references, sources, code search, stale and condense reports on read, GitHub sync, session mining and vault sync | `g_brain/` (not the host files), `sync_vault.sh` | `brain-vault-sync`, `brain-gmap` and `brain-miner` timers, and the crontab's `brain_refs.py all` | g-spine, config, and only `append_page` and `PAGE_PATH` from g-pulse |
 | g-brain host | The one app on :8766. `/mcp` serves agents (FastMCP, OAuth, Access) and `/api` serves web UIs. It mounts the tools of every other component | `g_brain/server.py`, `api.py`, `oauth.py`, `access.py`, `surface.py` | `brain-mcp.service` | everything |
 | g-voice | The WhatsApp and web assistant. It calls the corpus, todos and pulse in process rather than through the MCP | `voice/` | `voice.service` | g-brain corpus, g-todos, g-pulse, g-spine, config |
 
-Five private todos names are still used from g-pulse until g-todos grows a public API. They
-are listed in `ALLOWLIST` in the boundary test, which fails when an entry stops being used.
-A component can move to its own repo only once nothing on that list points at it.
+All todo consumers use its public API. `ALLOWLIST` in `tests/test_boundaries.py` is empty.
+The packaged `g_todos` helpers share the todos component with `brain_todos.py`.
 
 ### Old module names still work
 
@@ -56,25 +55,27 @@ directly, so it gets the alias module, which has no `mcp`. Point it at
 | `g_brain/api.py` | REST face: `create_api()` builds the `/api/*` FastAPI app for web UIs |
 | `g_brain/reader.py` | Shared read-only data layer over the notes filesystem + refs DB |
 | `g_brain/commit.py` | Versioned note writes: `brain_note` (the front door) + propose/execute/supersede/mark_broken, and the `stale_dep` blast-radius stamp |
-| `g_brain/verify.py` | Rewrite-safety sweep: resolves `stale_dep` flags on a daily timer, escalates the rest |
-| `g_brain/condense.py` | Condensation detector: finds outdated, overlapping, accreted and orphaned notes. Reports only, never writes |
+| `g_brain/verify.py` | Pure review rule and stale reports on read. The manual CLI can clear legacy evidence and write `status/stale.json` |
+| `g_brain/condense.py` | Condensation reports on read, cached until notes or the manifest change. The manual CLI can write `status/condense.json` |
 | `g_brain/codex.py` | `search_code` tool: semble semantic+lexical search across the repos mapped into `nerves/` |
 | `g_brain/gmap.py` | Layer 3+4 sync: crawls GitHub → brain/nerves/ and brain/lineage/ |
 | `g_spine/status.py` | Layer 5: probes the manifest's services + the dependency catalog, forwards service `/health` checks, alerts the spine on transitions, writes brain/status/snapshot.json |
-| `g_spine/alerts.py` | The alert spine: `send()`/`brain_alert` → ntfy, dedup/cooldown; the one channel for things that must reach the owner's phone |
+| `g_spine/alerts.py` | The alert spine: `send()`/`brain_alert` → ntfy, dedup/cooldown, the one channel for things that must reach the owner's phone |
 | `g_spine/unit_alert.py` | The `OnFailure=g-alert@%n.service` hook: one alert per failed unit, with its journal tail |
 | `g_brain/miner.py` | Session miner: scans finished Claude transcripts (this host's `~/.claude/projects`, plus one rsync-staged tree per remote host under `MINER_STAGING`, default `~/.cache/brain-miner/`) and runs a headless pass that writes `brain_note`s with `actor=ai-auto`. systemd `brain-miner.timer` runs it every 6h, with its ledger in `.pulse/state/miner-ledger.json`. Runs as **root**. Root's claude login is the one interactive use keeps fresh |
 | `g_brain/capture.py` | What the miner's headless pass calls (`-m brain_capture`) to search and write notes, and to add one line to the pulse page |
-| `g_pulse/pulse.py` | The pulse layer: page, inlet records, briefs, pantry, `/api/pulse/*` and the `pulse_*` MCP tools. Other components use only `append_page`, `record_state` and `composed_payload` |
-| `inlets/gmail_fetch.py` | Dumb IMAP reader behind the gmail pulse inlet (app password in `outlets/.env`, BODY.PEEK read-only); judgement lives in `.pulse/crons/pulse.gmail.distil.md` |
-| `outlets/remind.py` | ntfy reminders for dated todos (day-before + morning-of for a `due`; `remind_min` before a timed `start`, defaulting to 30 min, **not** gcal's all-day 900), `outlet-remind.timer`; exact-once state in `.pulse/state/reminders.json`. A missed stage is sent late rather than dropped, until the event it points at has passed |
-| `brain_todos.py` | Layer 6 commitments. Also the expiry sweep (`python brain_todos.py [--dry-run]`, `brain-todo-expire.timer` daily 07:25): open TODOs past `expires` become `status: expired`, never deleted. `expires` defaults at creation from priority - P0/P1 never expire, P2 60d, P3 21d, a dated one 30d past its `due` - because most TODOs arrive from the WhatsApp agent as perishable reminders and nothing closed the loop (77 open vs 30 ever done on 2026-09-08). **Priority beats the date**: a P0 a month overdue is the loudest thing the list can say, so retiring it would delete the signal |
+| `g_pulse/pulse.py` | Page, inlet records, briefs including `about/` facts, pantry, `/api/pulse/*` and `pulse_*` tools. Public functions: `append_page`, `record_state` and `composed_payload` |
+| `inlets/gmail_fetch.py` | Dumb IMAP reader behind the gmail pulse inlet (app password in `outlets/.env`, BODY.PEEK read-only), with judgement lives in `.pulse/crons/pulse.gmail.distil.md` |
+| `outlets/remind.py` | ntfy reminders for dated todos (day-before + morning-of for a `due` and `remind_min` before a timed `start`, defaulting to 30 min, **not** gcal's all-day 900), `outlet-remind.timer`, with exact-once state in `.pulse/state/reminders.json`. A missed stage is sent late rather than dropped, until the event it points at has passed |
+| `brain_todos.py` | Owner-action boundary, provenance, idempotency, recurrence, reminders, public todo API and read-time expiry. `python brain_todos.py [--dry-run]` reports only |
+| `g_todos/tickets.py` | Separate ticket store and `create_ticket`, `list_tickets`, `close_ticket` tools registered on the todos MCP. GET/POST/PATCH at `/api/tickets` |
+| `g_todos/text.py` | Text normalization and requester, composer and source provenance shared by both stores |
 | `g_brain/index.py` | Index rebuilder |
 | `g_brain/refs.py` | Reference graph maintenance |
 | `g_brain/source.py` | Source ingestion |
 | `g_brain/oauth.py` | OAuth provider for MCP auth |
-| `g_brain/surface.py` | What `/mcp` exposes of basic-memory: the proxy, pinned to the `initialize` handshake because fastmcp 4 otherwise mirrors a stateless 2026-07-28 caller onto a backend that may not speak it, and the write-surface lock (`server.disable`, no try/except: a lock that silently fails exposes raw `write_note`). basic-memory 0.23's `search` refuses non-OpenAI clients; point models at `search_notes` |
-| `g_brain/access.py` | Signed Cloudflare Access assertion verification for explicitly enrolled headless clients; hosted clients retain OAuth |
+| `g_brain/surface.py` | What `/mcp` exposes of basic-memory: the proxy, pinned to the `initialize` handshake because fastmcp 4 otherwise mirrors a stateless 2026-07-28 caller onto a backend that may not speak it, and the write-surface lock (`server.disable`, no try/except: a lock that silently fails exposes raw `write_note`). basic-memory 0.23's `search` refuses non-OpenAI clients. Point models at `search_notes` |
+| `g_brain/access.py` | Signed Cloudflare Access assertion verification for explicitly enrolled headless clients. Hosted clients retain OAuth |
 
 ## Run
 
@@ -86,11 +87,12 @@ source .env   # GITHUB_TOKEN, BRAIN_ROOT
 
 Managed by systemd. Restart with `systemctl restart brain-mcp`. One process serves both faces: `/mcp` (agents, via the cloudflared tunnel) and `/api/*` (web UIs, via nginx at the instance's API hostname).
 
-`deploy/systemd/` holds example units for a new install: the brain host, voice, the
-probes and reminders with their timers, the `g-alert@` failure pager, and the timed sweeps
-(condense, gmap, miner, todo expiry, vault sync, verify). They use the
-package module names and `@NAME@` placeholders, which each file's header explains. An
-instance that already runs older copies with real paths should not install these over them.
+`deploy/systemd/` holds example units for the host, voice, probes, reminders, the
+failure pager, GitHub sync, mining and vault sync. They use package module names and
+`@NAME@` placeholders explained in each header. Existing installations should keep their
+instance-specific paths. Verify and condense timer examples have been removed.
+`brain-verify.timer`, `brain-condense.timer` and `brain-todo-expire.timer` are no longer
+needed. The retained todo expiry example invokes a read-only compatibility report.
 
 ## Tests
 
@@ -132,30 +134,56 @@ its indexed SHA-256 and checks that watcher state is readable/running. Configure
 `BRAIN_MEMORY_DB`, `BRAIN_MEMORY_CANARY`, `BRAIN_MEMORY_WATCH_STATUS` and
 `BRAIN_MEMORY_FRESHNESS_GRACE_SECONDS` (120s default) for a different installation.
 It opens SQLite read-only with bounded queries. Mismatch outside the sync grace
-or empty/stopped watcher state warns through the existing alert spine; unsupported
+or empty/stopped watcher state warns through the existing alert spine. Unsupported
 schemas report unknown. This detects ingestion drift, not full-corpus completeness
 or embedding/ranking quality. A quiet watcher's old last_scan is not an outage.
 
-## The front door, and why writes are cheap now
+## The front door
 
-`brain_note(text, kind, target=None)` is the default write path: one call, one
-fact, no plan_id. It wraps the same versioned machinery (`_apply_op` →
-versioning, lineage, `.history/` snapshot, commits.log) and rebuilds the
-indexes, then returns. On an append, supply `summary=` with a current summary
-of the whole note. Without it, the previous summary stays visibly marked as
-needing review; the response returns the persisted title.
+Route dated work that is Gabriel's to do to `create_todo`, machine or agent work to
+`create_ticket`, current state to `pulse_note`, and durable knowledge to
+`brain_note(text, layer, bar=...)`. Machine alerts go to `brain_alert` or nowhere.
+Project canon belongs in repo docs and rules checked every run belong as g-levels gates.
 
-It exists because cost, not policy, was what kept the brain empty. The manual
-had said "capture autonomically, don't wait to be asked" since the start and
-the brain still took **2 commits across 98 sessions** (2026-07-28 → 08-17),
-while `pulse_note` (one string, one call) got used constantly. So the fix was
-to make a durable capture cost what a pulse note costs.
+The four capture layers are `design` for Gabriel's designs, `idea` for ideas no project
+owns, `about` for personal facts, preferences, people, decisions and reasons, and `hazard`
+for operational hazards and external quirks. They write to `designs/`, `ideas/`, `about/`
+and `hazards/`, with kinds `design`, `idea`, `fact` and `hazard`. Legacy findings and
+references remain readable but are not capture layers. `kind=design|idea` remains a
+deprecated alias.
 
-`brain_note` can only **create or append** (a second capture on an existing
-slug thickens the note rather than colliding, which is what makes it safe to
-reach for reflexively). Anything that *destroys* knowledge goes through
-`propose_commit` → `execute_commit`. That fence is the whole safety argument
-for making the additive path frictionless.
+Search before writing. A new note needs a one-line `bar` answering whether a future
+agent would be worse off without this and whether it is recorded nowhere else.
+Near-duplicates return up to three appendable targets. Append with `target=` or pass
+`distinct=True` for a separate note. Appending to an existing target or slug needs no
+bar. Standing directives get an advisory g-levels hint and still write normally.
+
+Captures use the versioned machinery, lineage, `.history/` snapshots, `commits.log`
+and index rebuilds. Supply `summary=` for the current whole note when appending.
+Otherwise the old summary is marked for review. `brain_note` only creates or appends.
+Structural writes use `propose_commit` then `execute_commit`.
+
+## Todos and tickets
+
+Every todo writer uses the boundary in `brain_todos.py`, including REST, MCP, voice
+and inlets. It normalizes text and records provenance as `requester`, `composer` and
+`source`, defaulting missing values to `unknown`. An owner request (`requester="gabriel"`)
+passes the owner-action check. For other requesters, project and agent work is refused
+with a ticket pointer and bodies are limited to 800 characters. Machine alerts are
+refused regardless of requester. The check classifies words rather than intent.
+
+Stable `source_key` values make retries idempotent without reopening closed work.
+Use public `create`, `update_todo`, `upsert`, `get`, `iter_todos` and `serialize` functions,
+not private storage helpers. Known inlets use `upsert` to reconcile the same slug and
+key. Reads derive expiry without rewriting files: default P0/P1 and recurring todos
+never expire, P2 lasts 60 days, P3 lasts 21 days, and low-priority dated work expires
+30 days after its due date. Explicit expiry takes precedence.
+`python brain_todos.py [--dry-run]` is a report only, including for legacy timer calls.
+
+Tickets live in `tickets/` and support open, done and dropped states, provenance and
+`source_key` deduplication. They stay out of life todos, calendars, reminders and pulse
+commitments. Their tools share `brain_todos.mcp`, which the host mounts. `create_api()`
+mounts both `/api/todos` and `/api/tickets` routers.
 
 ### Provenance vs permission
 
@@ -164,13 +192,13 @@ for making the additive path frictionless.
 `actor="human"` and lie about the note's lineage. Split as of 2026-08-17:
 
 - **`actor`**: provenance. `human` (the owner dictated it), `agent` (the model
-  composed it) or `ai-auto` (cron, nobody watching). Sets lineage; record honestly.
+  composed it) or `ai-auto` (cron, nobody watching). Sets lineage. Record honestly.
 - **`assent`**: authorisation for one destructive op. Set when the owner was
   asked and said yes.
 
-`_authorise()` is the single gate: additive ops need neither field; `supersede`
-and `edit_major` need `assent` from a human-in-the-loop actor; `ai-auto` is
-refused outright regardless of assent, because there is nobody there to ask.
+`_authorise()` is the single gate: additive ops need neither field. `supersede`
+and transformative `edit_major` need `assent` from an attended actor. Unattended
+`ai-auto` actors cannot perform either operation, regardless of assent.
 `mark_broken` is deliberately *not* fenced: flagging a note as no-longer-true
 destroys nothing, and an unflagged stale note is the more expensive failure.
 
@@ -189,35 +217,34 @@ Habitual, unattended writing moves the guard from before the write to after it:
    each dependent with `stale_dep: [{note, since, reason, stamp}]`. Weaker than
    `status: broken`. It means *unverified*, not *wrong*. `indexes/`,
    `versions/` and `archive/` are excluded: they can't go stale.
-2. **The sweep**: `brain_verify.py` (daily, `brain-verify.timer`) clears a flag
-   **only** on explicit dependency-specific review evidence from
-   `review_dependency(note, dependency, expected_stamp, reason, actor)`. Read
-   both notes first. The stamp must match the current flag (`since` for legacy
-   flags); each new dependency rewrite changes it. Unrelated edits cannot clear
-   flags, and unattended actors cannot submit reviews. The sweep only updates
-   flag metadata; it never judges whether a note holds. Everything else stays flagged
-   and pages the spine past 14 days.
-3. **The queue**: `/api/stale` serves the report; the orientation block counts
-   outstanding flags.
+2. **The review**: `review_dependency(note, dependency, expected_stamp, reason, actor)`
+   records evidence and clears matching flags in the same versioned write using
+   `verify.resolve_note`. Read both notes first. Evidence needs the exact stamp
+   (`since` for legacy flags), an attended human or agent, a reason of at least four
+   words and a review timestamp. A new rewrite invalidates older evidence.
+   Unrelated edits cannot clear flags and unattended actors cannot submit reviews.
+3. **The queue**: `/api/stale` and orientation compute reports on read without file
+   writes or alerts. YAML dates and timestamps are normalized. Malformed reviews
+   remain on disk and appear in report errors. Flags aged 14 days are highlighted.
 
-The restraint in (2) is deliberate and load-bearing. A verifier trusted to
-judge "does this still hold?" would clear everything, look green, and let the
-corpus rot behind it, so a run clearing an entire non-trivial batch fires a
-`suspicious_full_clear` warning at the spine. The watcher reports on itself
-because nothing else is watching it.
+`python brain_verify.py` remains a manual sweep for legacy evidence and writes
+`status/stale.json`. `--dry-run` only reports. Only the applying manual sweep sends
+errors or the `suspicious_full_clear` warning when it clears an entire batch of at
+least five flags. Reads never emit that warning.
 
 ## Condensing (the opposite pressure)
 
-Habitual capture keeps the brain full; nothing keeps it *readable*, and an
-unreadable corpus goes unread and then unwritten. `brain_condense.py`
-(`brain-condense.timer`, daily) finds five kinds of debt and **never writes**:
+Condensation reports are computed on read at `/api/condense` and in orientation,
+cached until kept notes, the manifest or the date change. The detector does not
+rewrite notes. `python brain_condense.py` can still write `status/condense.json` for
+manual use. It finds five kinds of debt:
 
 - **`stale`**: the one that matters. A note can be well-formed, well-linked
   and unique while being simply wrong. Checked mechanically against things that
   are their own SSOT: projects the manifest marks fossil/deprecated (matched only in
   *technical* context: a bare word-boundary match on `period` flagged "a
   period of time"), paths under the home directory that are no longer on disk, and the
-  manifest's `retired_terms` (a `term` and a `reason` each). Age alone is never proof; age *plus* a contradiction is.
+  manifest's `retired_terms` (a `term` and a `reason` each). Age alone is never proof. Age *plus* a contradiction is.
 - **`overlaps`**: pairs sharing token territory. Whole-body Jaccard runs
   median 0.041 on this corpus, so ≥0.20 is strong. It measures shared ground,
   not duplication: the top pairs are legitimately separate notes.
@@ -246,7 +273,7 @@ Dependency liveness resolves in order: a catalog dep with `"health": {"service",
 The vault (`BRAIN_ROOT`) is a git repo pushing to a private remote the
 instance chooses. Content only: `g-brain` is the code. It exists
 so Obsidian on the iPad (via Working Copy) can hold a working copy and send
-edits back; Excalidraw drawings land in the vault as ordinary files.
+edits back. Excalidraw drawings land in the vault as ordinary files.
 
 `sync_vault.sh` runs from the instance's `brain-vault-sync.timer`, which
 `deploy/systemd/` has no example of (every 10min, **as the user that owns the
@@ -263,12 +290,12 @@ and you found out by noticing notes weren't appearing.
 
 Gitignored, and each for a reason that will bite if undone:
 `.oauth-clients.json` / `.oauth-tokens.json` are **live session-granting
-credentials** and must never reach GitHub or a synced device; `.pulse/` is
+credentials** and must never reach GitHub or a synced device. `.pulse/` is
 rewritten continuously and would conflict on nearly every pull (read it via
-gcommand's `/pulse`); `.refs-index.sqlite` (and its markdown face
+gcommand's `/pulse`). `.refs-index.sqlite` (and its markdown face
 `.refs-index.md`) is derived on the brain host and regenerated wholesale, so syncing it only
-gives every device a diff it can never author; `.quarantine/` is supersede
-machinery, not notes; `.obsidian/` is per-device UI state, and `workspace.json`
+gives every device a diff it can never author. `.quarantine/` is supersede
+machinery, not notes. `.obsidian/` is per-device UI state, and `workspace.json`
 inside it is the one genuinely multi-writer file a shared vault produces.
 
 Still tracked, deliberately: `commits.log` is the commit audit trail and is
@@ -321,7 +348,7 @@ Headless MCP clients use a dedicated Cloudflare service token on the instance's
 Access-protected `/mcp` hostname. The origin also verifies the signed Access
 assertion: `BRAIN_ACCESS_ISSUER`, `BRAIN_ACCESS_AUDIENCE` and space-separated
 `BRAIN_ACCESS_CLIENT_IDS` configure its issuer, application audience and explicit
-service Client ID allowlist. All three are required; otherwise only OAuth works.
+service Client ID allowlist. All three are required. Otherwise only OAuth works.
 Never enroll the public OAuth Worker's upstream service token: every anonymous
 request through that Worker carries it. Access policy admission alone is not
 origin authorization. Existing OAuth bearer headers take precedence, and invalid
