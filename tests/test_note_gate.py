@@ -159,9 +159,25 @@ def test_duplicate_check_failure_does_not_block_capture(corpus, monkeypatch):
     assert commit.brain_note(BODY, "hazard", bar=BAR)["ok"]
 
 
+def test_duplicate_candidates_only_name_appendable_notes(corpus):
+    root, commit = corpus
+    extensionless = seed(root, "hazards/extensionless", "Amber adapter")
+    seed(root, "hazards/appendable.md", "Amber adapter")
+    out = commit.brain_note(BODY, "hazard", title="Amber buffer drain", bar=BAR)
+    assert not out["ok"]
+    assert [hit["target"] for hit in out["near_duplicates"]] == ["hazards/appendable.md"]
+    for hit in out["near_duplicates"]:
+        appended = commit.brain_note("A second fixture observation.", "hazard", target=hit["target"])
+        assert appended["ok"] and appended["action"] == "appended"
+    assert extensionless.read_text().count("second fixture") == 0
+    assert not (root / "hazards/extensionless.md").exists()
+
+
 @pytest.mark.parametrize("text", ["Always drain the adapter before reconnecting.",
     "Never reuse stale credentials.", "Clients must drain the adapter.",
-    "Do not reuse a session key.", "Every time credentials rotate, refresh the cache."])
+    "Do not reuse a session key.", "Every time credentials rotate, refresh the cache.",
+    "When reconnecting, always drain the amber adapter.",
+    "    Do not reuse a session key.", "Adapter notes:\n    Do not reuse a session key."])
 def test_standing_directives_write_with_advisory_hint(corpus, text):
     root, commit = corpus
     out = commit.brain_note(text, "hazard", bar=BAR)
@@ -224,6 +240,39 @@ def test_capture_maps_kinds_and_reports_unmapped_notes(corpus):
         assert post["layer"] == layer and post["bar"] == BAR
         assert post["lineage"] == ["A"] * 3
     assert all("No clear layer mapping" in r["reason"] for r in out[4:])
+
+
+def test_original_capture_payload_maps_legacy_kinds_without_bar(corpus, monkeypatch, capsys):
+    import io
+    import sys
+    from g_brain import capture
+    root, _ = corpus
+    plan = {"notes": [
+        {"kind": "design", "text": "A ring of mirrors redirects daylight into the courtyard.",
+         "title": "Courtyard mirrors", "tags": ["fixture"], "summary": "Mirrors redirect daylight."},
+        {"kind": "idea", "text": "Map orchard moisture onto a musical scale for an installation."},
+        {"kind": "fact", "text": "The fictional owner prefers paper invitations for family gatherings."},
+        {"kind": "hazard", "text": BODY},
+    ], "pulse": ""}
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(plan)))
+    assert capture.main(["apply"]) == 0
+    results = json.loads(next(line for line in capsys.readouterr().out.splitlines() if line.startswith("[{")))
+    assert [r["action"] for r in results] == ["created"] * 4
+    for result, layer in zip(results, ("design", "idea", "about", "hazard")):
+        post = frontmatter.load(root / result["target"])
+        assert post["layer"] == layer and "mined from session transcript" in post["bar"]
+        assert post["lineage"] == ["A"] * 3
+
+
+@pytest.mark.parametrize("layer", ["about", "hazard"])
+def test_new_capture_kinds_are_canonical_through_condensation(corpus, layer):
+    from g_brain import condense
+    root, commit = corpus
+    captured = commit.brain_note(BODY, layer, bar=BAR)
+    assert captured["ok"]
+    report = condense.read_report(root)
+    assert report["notes_scanned"] == 1
+    assert report["counts"]["drift"] == 0
 
 
 def test_capture_surfaces_gate_refusal_and_cli_failure(corpus, monkeypatch, capsys):

@@ -57,9 +57,12 @@ def load_master_index() -> str:
 _POINTER = """\
 # Brain: quick orientation
 
-Memory routing rule: **has a date and is Gabriel's to do -> `create_todo`; \
-machine or agent work -> `create_ticket`; true now -> `pulse_note`; \
-true always -> `brain_note(text, layer, bar=...)`**.
+Memory routing rule:
+- Has a date and is Gabriel's to do -> `create_todo`.
+- Machine or agent work -> `create_ticket`.
+- True now -> `pulse_note`.
+- True always -> `brain_note(text, layer, bar=...)`.
+- Machine alerts -> `brain_alert` or nowhere.
 
 Capture freely during the work when a future agent would be worse off without it \
 and it is recorded nowhere else. Choose a layer:
@@ -159,7 +162,7 @@ if __name__ == "__main__":
 from brain_api import create_api as _create_api
 
 app = mcp.http_app()
-_api = _create_api()  # includes the todos and pulse routers itself
+_api = _create_api()  # includes the todos, tickets and pulse routers
 app.mount("/api", _api)
 
 from brain_access import AccessAssertionMiddleware

@@ -61,7 +61,7 @@ _REPORT_LOCK = Lock()
 OVERLAP_THRESHOLD = 0.20
 ACCRETION_STAMPS = 3       # dated appends before a note wants rewriting as prose
 
-CANONICAL_KINDS = {"design", "finding", "idea", "reference", "source", "log", "about", "hazard"}
+CANONICAL_KINDS = {"design", "finding", "idea", "reference", "source", "log", "about", "fact", "hazard"}
 
 # Words that carry no subject signal here: mostly g-system furniture that
 # appears in half the corpus and would make everything look similar, plus the

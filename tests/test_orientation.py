@@ -130,7 +130,11 @@ class OrientationTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertTrue(response.headers['content-type'].startswith('text/plain'))
             self.assertIn('Brain (long-term corpus', response.text)
-            self.assertIn('Writing is part', response.text)
+            for route in ('create_todo', 'create_ticket', 'pulse_note',
+                          'brain_note(text, layer, bar=...)', 'brain_alert'):
+                self.assertIn(route, response.text)
+            self.assertIn("Gabriel's to do", response.text)
+            self.assertNotIn(';', response.text)
             response = client.get('/orient', params={'cwd': '/root', 'project': 'widget', 'task': 'authentication'})
             self.assertIn('findings/widget-login', response.text)
             self.assertEqual(client.get('/orient', params={'task': 'x' * 1001}).status_code, 422)

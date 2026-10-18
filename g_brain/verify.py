@@ -17,7 +17,7 @@ healthy, and the corpus would rot behind a green light. So the deliberate
 design is: mechanical clears here, judgement stays with a human or with an
 explicitly-invoked agent reading /api/stale.
 
-Self-monitoring: every run reports its own numbers, and a run that clears
+Self-monitoring: the manual sweep reports its own numbers, and a run that clears
 *everything* is itself treated as suspicious: that is the shape a rubber
 stamp would take.
 """
@@ -28,7 +28,6 @@ import datetime as dt
 import json
 import sys
 from pathlib import Path
-from threading import Lock
 
 import frontmatter
 
@@ -39,7 +38,6 @@ REPORT_PATH = BRAIN_ROOT / "status" / "stale.json"
 
 # A flag this old is highlighted in the report and session orientation.
 ESCALATE_AFTER_DAYS = 14
-_REPORT_LOCK = Lock()
 
 
 def _today() -> dt.date:
@@ -47,12 +45,19 @@ def _today() -> dt.date:
 
 
 def _parse_date(value) -> dt.date | None:
+    if isinstance(value, dt.datetime):
+        return value.date()
     if isinstance(value, dt.date):
         return value
-    try:
-        return dt.date.fromisoformat(str(value).strip())
-    except (ValueError, AttributeError):
+    if not isinstance(value, str):
         return None
+    try:
+        return dt.date.fromisoformat(value.strip())
+    except ValueError:
+        try:
+            return dt.datetime.fromisoformat(value.strip()).date()
+        except ValueError:
+            return None
 
 
 def _iter_flagged(root: Path):
@@ -66,7 +71,7 @@ def _iter_flagged(root: Path):
         except Exception:  # noqa: BLE001 - a malformed note must not stop the sweep
             continue
         flags = post.get("stale_dep")
-        if isinstance(flags, list) and flags:
+        if flags:
             yield md, post, flags
 
 
@@ -74,12 +79,29 @@ def resolve_note(note: str, metadata: dict, today: dt.date) -> dict:
     """Pure review check for one note; return retained flags and report entries."""
     flags = metadata.get("stale_dep") or []
     reviews = metadata.get("dependency_reviews") or []
+    errors = []
+    if not isinstance(flags, list):
+        flags = [flags]
+        errors.append(f"{note}: malformed dependency flags retained")
     if not isinstance(reviews, list):
+        errors.append(f"{note}: malformed dependency reviews retained")
         reviews = []
+    valid_reviews = []
+    for review in reviews:
+        if (isinstance(review, dict)
+                and isinstance(review.get("note"), str)
+                and isinstance(review.get("stamp"), (str, dt.date))
+                and isinstance(review.get("actor"), str)
+                and review["actor"] in {"human", "agent"}
+                and isinstance(review.get("reason"), str)
+                and len(review["reason"].strip().split()) >= 4
+                and _parse_date(review.get("reviewed_at")) is not None):
+            valid_reviews.append(review)
+        else:
+            errors.append(f"{note}: malformed or unattended dependency review retained")
     keep = []
     cleared = []
     outstanding = []
-    errors = []
     for flag in flags:
         if not isinstance(flag, dict):
             keep.append(flag)
@@ -95,12 +117,8 @@ def resolve_note(note: str, metadata: dict, today: dt.date) -> dict:
             "reason": str(flag.get("reason", "")),
             "stamp": str(flag.get("stamp") or flag.get("since") or ""),
         }
-        review = next((r for r in reviews if isinstance(r, dict)
-                       and r.get("note") == dep
-                       and entry["stamp"] and r.get("stamp") == entry["stamp"]
-                       and r.get("actor") in {"human", "agent"}
-                       and len(str(r.get("reason", "")).strip().split()) >= 4
-                       and r.get("reviewed_at")), None)
+        review = next((r for r in valid_reviews if r["note"] == dep
+                       and entry["stamp"] and str(r["stamp"]) == entry["stamp"]), None)
         if review is not None:
             entry["cleared_because"] = review["reason"]
             cleared.append(entry)
@@ -157,7 +175,7 @@ def sweep(apply: bool = True, root: Path | None = None) -> dict:
     # if it ever goes wrong, go wrong by clearing everything and looking
     # healthy. Clearing a whole non-trivial batch is therefore reported as a
     # suspicious outcome rather than a good one.
-    report["suspicious_full_clear"] = total >= 5 and len(outstanding) == 0 and not errors
+    report["suspicious_full_clear"] = apply and total >= 5 and len(outstanding) == 0 and not errors
 
     return report
 
@@ -182,20 +200,18 @@ def _notify(report: dict) -> None:
 
 
 def read_report(root: Path | None = None) -> dict:
-    """Resolve reviewed flags on demand, serializing concurrent report readers."""
-    with _REPORT_LOCK:
-        report = sweep(root=root)
-        _notify(report)
-        return report
+    """Report current evidence without writing notes, reports or alerts."""
+    return sweep(apply=False, root=root)
 
 
 def main() -> int:
     dry = "--dry-run" in sys.argv
-    report = sweep(apply=False) if dry else read_report()
+    report = sweep(apply=not dry)
 
     if not dry:
         REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
         REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n")
+        _notify(report)
 
     print(json.dumps({k: v for k, v in report.items()
                       if not k.endswith("_detail")}, indent=2))

@@ -22,7 +22,7 @@ dependencies = [
 test = ["pytest>=9"]
 
 [tool.setuptools]
-packages = ["g_spine", "g_pulse", "g_brain", "voice", "inlets", "outlets"]
+packages = ["g_spine", "g_todos", "g_pulse", "g_brain", "voice", "inlets", "outlets"]
 # g_config and brain_todos are real modules. The rest are compat aliases for modules that
 # moved into the packages above (see "Old module names still work" in CLAUDE.md).
 py-modules = [

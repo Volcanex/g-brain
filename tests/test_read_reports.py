@@ -1,4 +1,4 @@
-"""Report requests resolve reviews and detect condensation without scheduled jobs."""
+"""Reviews clear on write and report requests leave the corpus unchanged."""
 import copy
 import datetime as dt
 import json
@@ -54,7 +54,7 @@ def _write_note(root, flags, reviews=()):
     return md
 
 
-def test_stale_request_clears_reviewed_flag_and_keeps_unreviewed(reports, tmp_path):
+def test_review_clears_matching_flag_and_reads_keep_unreviewed(reports, tmp_path):
     client, commit, _, send = reports
     flags = [_flag(), _flag("designs/other")]
     md = _write_note(tmp_path, flags)
@@ -63,11 +63,12 @@ def test_stale_request_clears_reviewed_flag_and_keeps_unreviewed(reports, tmp_pa
                                       "Read both contracts; transport remains compatible.")
     assert review["ok"], review
     before = frontmatter.load(md)
-    assert len(before["stale_dep"]) == 2  # the write records evidence only
+    assert before["stale_dep"] == [flags[1]]
+    unchanged = md.read_bytes(), md.stat().st_mtime_ns
     response = client.get("/api/stale")
     assert response.status_code == 200
     report = response.json()
-    assert report["cleared"] == 1
+    assert report["cleared"] == 0
     assert report["outstanding"] == report["escalating"] == 1
     assert report["outstanding_detail"][0]["depends_on"] == "designs/other"
     after = frontmatter.load(md)
@@ -75,15 +76,41 @@ def test_stale_request_clears_reviewed_flag_and_keeps_unreviewed(reports, tmp_pa
     assert after["version"] == before["version"]
     assert after.content == before.content
     assert after["dependency_reviews"] == before["dependency_reviews"]
+    assert (md.read_bytes(), md.stat().st_mtime_ns) == unchanged
     assert client.get("/api/stale").json()["cleared"] == 0
     assert not (tmp_path / "status/stale.json").exists()
     send.assert_not_called()
 
 
-def test_orientation_resolves_reviews_and_surfaces_oldest_flags(reports, tmp_path):
+def test_review_clears_only_exact_stamp_in_single_note_write(reports, tmp_path, monkeypatch):
+    _, commit, verify, _ = reports
+    flags = [_flag(), {**_flag(), "stamp": "another-fixture-revision"}, _flag("designs/other")]
+    md = _write_note(tmp_path, flags)
+    resolve = Mock(wraps=verify.resolve_note)
+    monkeypatch.setattr(verify, "resolve_note", resolve)
+    write_text = Path.write_text
+    writes = []
+
+    def track_write(path, *args, **kwargs):
+        if path == md:
+            writes.append(path)
+        return write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", track_write)
+    out = commit.review_dependency("ideas/transport", flags[0]["note"], flags[0]["stamp"],
+                                   "Read both contracts and verified compatibility.")
+    assert out["ok"]
+    assert frontmatter.load(md)["stale_dep"] == flags[1:]
+    assert len(frontmatter.load(md)["dependency_reviews"]) == 1
+    assert writes == [md]
+    resolve.assert_called_once()
+
+
+def test_orientation_reports_reviews_and_oldest_flags_without_writes(reports, tmp_path):
     client, _, _, send = reports
     flags = [_flag(f"designs/upstream-{i}", since=f"2026-09-0{i + 1}") for i in range(6)]
     md = _write_note(tmp_path, flags, [_review(flags[-1])])
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in tmp_path.rglob("*") if p.is_file()}
     response = client.get("/api/orient", params={"project": "transport"})
     assert response.status_code == 200
     assert "5 flag(s) aged 14+ days" in response.text
@@ -91,20 +118,29 @@ def test_orientation_resolves_reviews_and_surfaces_oldest_flags(reports, tmp_pat
     assert "ideas/transport' (47d)" in response.text
     assert "1 notes by layer: designs 0, ideas 1, about 0, hazards 0" in response.text
     assert len(response.text) <= 6000
-    assert len(frontmatter.load(md)["stale_dep"]) == 5
+    assert len(frontmatter.load(md)["stale_dep"]) == 6
     report = client.get("/api/stale").json()
     assert [n["age_days"] for n in report["oldest_detail"]] == [47, 46, 45, 44, 43]
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in tmp_path.rglob("*") if p.is_file()} == before
     send.assert_not_called()
 
 
-def test_whole_batch_clear_warns_once_with_spine_dedup(reports, tmp_path):
-    client, _, _, send = reports
+def test_whole_batch_clear_warns_only_on_manual_sweep(reports, tmp_path, monkeypatch):
+    client, _, verify, send = reports
     flags = [_flag(f"designs/upstream-{i}") for i in range(5)]
-    _write_note(tmp_path, flags, [_review(flag) for flag in flags])
+    md = _write_note(tmp_path, flags, [_review(flag) for flag in flags])
+    before = md.read_bytes(), md.stat().st_mtime_ns
     first = client.get("/api/stale").json()
-    assert first["suspicious_full_clear"]
+    assert not first["suspicious_full_clear"]
     assert first["cleared"] == 5
     assert not client.get("/api/stale").json()["suspicious_full_clear"]
+    assert (md.read_bytes(), md.stat().st_mtime_ns) == before
+    send.assert_not_called()
+    monkeypatch.setattr(sys, "argv", ["brain_verify.py"])
+    monkeypatch.setattr(verify, "REPORT_PATH", tmp_path / "status/stale.json")
+    assert verify.main() == 0
+    assert "stale_dep" not in frontmatter.load(md)
+    assert json.loads(verify.REPORT_PATH.read_text())["suspicious_full_clear"]
     send.assert_called_once()
     assert send.call_args.args[:2] == ("warn", "brain-verify")
     assert send.call_args.kwargs["dedup_key"] == "brain-verify-full-clear"
@@ -126,7 +162,7 @@ def test_one_note_resolution_is_pure_and_rejects_old_or_unattended_reviews(repor
 
 
 def test_failed_clear_stays_outstanding(reports, tmp_path, monkeypatch):
-    client, _, _, send = reports
+    _, _, verify, send = reports
     flag = _flag()
     md = _write_note(tmp_path, [flag], [_review(flag)])
     write_text = Path.write_text
@@ -137,12 +173,84 @@ def test_failed_clear_stays_outstanding(reports, tmp_path, monkeypatch):
         return write_text(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", fail_note_write)
-    report = client.get("/api/stale").json()
+    monkeypatch.setattr(sys, "argv", ["brain_verify.py"])
+    monkeypatch.setattr(verify, "REPORT_PATH", tmp_path / "status/stale.json")
+    assert verify.main() == 0
+    report = json.loads(verify.REPORT_PATH.read_text())
     assert report["cleared"] == 0
     assert report["outstanding"] == 1
     assert "fixture write failure" in report["errors"][0]
     assert frontmatter.load(md)["stale_dep"] == [flag]
     assert send.call_args.kwargs["dedup_key"] == "brain-verify-errors"
+
+
+def test_report_preserves_append_after_reading_note(reports, tmp_path, monkeypatch):
+    _, _, verify, send = reports
+    flag = _flag()
+    md = _write_note(tmp_path, [flag], [_review(flag)])
+    resolve = verify.resolve_note
+
+    def append_during_resolution(*args):
+        with md.open("a") as stream:
+            stream.write("\nConcurrent fixture observation.\n")
+        return resolve(*args)
+
+    monkeypatch.setattr(verify, "resolve_note", append_during_resolution)
+    verify.read_report(tmp_path)
+    assert "Concurrent fixture observation." in frontmatter.load(md).content
+    assert frontmatter.load(md)["stale_dep"] == [flag]
+    send.assert_not_called()
+
+
+@pytest.mark.parametrize("since", [dt.datetime(2026, 9, 1, 12),
+    dt.datetime(2026, 9, 1, 12, tzinfo=dt.timezone.utc), dt.date(2026, 9, 1),
+    "2026-09-01T12:00:00Z"])
+def test_yaml_timestamps_work_on_stale_and_orientation(reports, tmp_path, since):
+    client, _, _, send = reports
+    md = _write_note(tmp_path, [_flag(since=since)])
+    before = md.read_bytes(), md.stat().st_mtime_ns
+    stale = client.get("/api/stale")
+    assert stale.status_code == 200
+    assert stale.json()["outstanding_detail"][0]["since"] == "2026-09-01"
+    assert stale.json()["oldest_detail"][0]["age_days"] == 47
+    assert client.get("/api/orient").status_code == 200
+    assert (md.read_bytes(), md.stat().st_mtime_ns) == before
+    send.assert_not_called()
+
+
+@pytest.mark.parametrize("reviews", [{"actor": ["agent"]}, [None], ["invalid"]])
+def test_malformed_review_collections_are_reported_without_writes(reports, tmp_path, reviews):
+    client, _, _, send = reports
+    md = _write_note(tmp_path, [_flag()])
+    post = frontmatter.load(md)
+    post["dependency_reviews"] = reviews
+    md.write_text(frontmatter.dumps(post))
+    before = md.read_bytes(), md.stat().st_mtime_ns
+    report = client.get("/api/stale")
+    assert report.status_code == 200
+    assert report.json()["outstanding"] == 1 and report.json()["errors"]
+    assert client.get("/api/orient").status_code == 200
+    assert (md.read_bytes(), md.stat().st_mtime_ns) == before
+    send.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [("actor", ["agent"]), ("actor", {"agent": True}),
+    ("reason", ["Read", "both", "fixture", "contracts"]), ("stamp", ["fixture-revision"]),
+    ("reviewed_at", ["2026-10-18"]), ("reviewed_at", {"when": "2026-10-18"}),
+    ("reviewed_at", "not a timestamp"), ("note", ["designs/upstream"])])
+def test_malformed_review_fields_stay_flagged_on_both_routes(reports, tmp_path, field, value):
+    client, _, _, send = reports
+    flag = _flag()
+    review = {**_review(flag), field: value}
+    md = _write_note(tmp_path, [flag], [review])
+    before = md.read_bytes(), md.stat().st_mtime_ns
+    stale = client.get("/api/stale")
+    assert stale.status_code == 200
+    assert stale.json()["outstanding"] == 1
+    assert stale.json()["errors"]
+    assert client.get("/api/orient").status_code == 200
+    assert (md.read_bytes(), md.stat().st_mtime_ns) == before
+    send.assert_not_called()
 
 
 def test_condense_request_ignores_old_file_and_tracks_note_edits(reports, tmp_path):

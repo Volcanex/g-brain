@@ -84,8 +84,8 @@ class MemoryUpdates(unittest.TestCase):
             'revision-one', 'Checked upstream; transport contract remains compatible.')
         self.assertTrue(result['ok'], result)
         self.assertNotEqual(self.load()['version'], before)
-        self.assertEqual(verify.sweep()['cleared'], 1)
         self.assertNotIn('stale_dep', self.load())
+        self.assertEqual(verify.sweep()['cleared'], 0)
         self.assertIn('Checked upstream', (self.root / 'commits.log').read_text())
 
     def test_new_stamp_invalidates_old_review_even_on_same_day(self):
@@ -110,7 +110,7 @@ class MemoryUpdates(unittest.TestCase):
         commit.review_dependency('hazards/transport', 'designs/other', '2020-01-01',
                                  'Read both notes; this contract is still compatible.')
         report = verify.sweep()
-        self.assertEqual(report['cleared'], 1)
+        self.assertEqual(report['cleared'], 0)
         self.assertEqual(report['outstanding'], 1)
         self.assertEqual(self.load()['stale_dep'][0]['note'], 'designs/upstream')
 

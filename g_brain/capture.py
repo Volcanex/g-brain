@@ -72,7 +72,10 @@ def apply(plan):
             results.append({"ok": True, "action": "skipped", "title": title,
                             "reason": "No clear layer mapping. Use design, idea, about or hazard."})
             continue
-        out = brain_note(text=note["text"], layer=layer, bar=note.get("bar"), target=note.get("target"),
+        bar = note.get("bar")
+        if not note.get("layer") and note.get("kind") in KIND_LAYERS and not bar:
+            bar = "mined from session transcript and not recorded elsewhere at capture time"
+        out = brain_note(text=note["text"], layer=layer, bar=bar, target=note.get("target"),
                          title=note.get("title"), tags=note.get("tags"), summary=note.get("summary"),
                          actor="ai-auto")
         results.append({"title": title, **{k: out[k] for k in

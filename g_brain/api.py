@@ -64,9 +64,11 @@ def create_api() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Todos surface (CRUD-ish; the only mutable face on /api).
+    # Owner commitments and machine work have separate stores and routes.
     from brain_todos import create_router as _todos_router
+    from g_todos.tickets import create_tickets_router
     api.include_router(_todos_router())
+    api.include_router(create_tickets_router())
 
     # Pulse surface (live/ephemeral layer: /api/pulse/*).
     from brain_pulse import create_router as _pulse_router
@@ -455,7 +457,7 @@ def _orientation_hits(notes: list[Note], project: str, task: str) -> list[Note]:
 
 
 def render_orientation(cwd: str = "", limit: int = 12, project: str = "", task: str = "") -> str:
-    """Build the session-start brain block and resolve housekeeping on read."""
+    """Build the session-start brain block and report housekeeping without writes."""
     notes = [n for n in all_notes() if is_corpus_note(n.path)]
 
     lines: list[str] = ["## Brain (long-term corpus, the cortex)"]
@@ -503,7 +505,7 @@ def render_orientation(cwd: str = "", limit: int = 12, project: str = "", task: 
         if data.get("escalating"):
             oldest = ", ".join(f"`{_orientation_text(o['note'], 70)}` ({o['age_days']}d)"
                                for o in data["oldest_detail"][:3])
-            message += f"; {data['escalating']} flag(s) aged 14+ days, oldest: {oldest}"
+            message += f" and {data['escalating']} flag(s) aged 14+ days, oldest: {oldest}"
         housekeeping.append(message)
 
     data = condense_report(root=BRAIN_ROOT)
@@ -518,20 +520,19 @@ def render_orientation(cwd: str = "", limit: int = 12, project: str = "", task: 
         )
 
     if housekeeping:
-        lines.append("\nHousekeeping: " + "; ".join(_orientation_text(item, 450) for item in housekeeping) + ".")
+        lines.append("\nHousekeeping: " + ". ".join(_orientation_text(item, 450) for item in housekeeping) + ".")
 
     lines.extend(relevant)
 
     lines.append(
-        "\n**Writing is part of the work, not a ceremony.** When something "
-        "true-always emerges, such as a decision, a finding or how a system "
-        "actually behaves, call `brain_note(text, kind)` there and then. One call, no "
-        "permission needed, no plan_id. Dated → `create_todo`; true-now → "
-        "`pulse_note`. Found something here that's no longer true? "
-        "`mark_broken` it. That's unfenced, and a wrong note left unflagged "
-        "costs more than a wrong flag. Only the transformative writes stop for "
-        "a yes: `supersede`, and `edit_major` on a note the rest of the brain "
-        "is built on. `brain_init` has the full manual."
+        "\nMemory routing: dated and Gabriel's to do -> `create_todo`.\n"
+        "Machine or agent work -> `create_ticket`. True now -> `pulse_note`.\n"
+        "True always -> `brain_note(text, layer, bar=...)`: design, idea, about or hazard.\n"
+        "Capture when a future agent would be worse off without it and it is recorded nowhere else.\n"
+        "Machine alerts -> `brain_alert` or nowhere. Project canon -> repo docs.\n"
+        "Every-run rules -> g-levels gates. Search first and thicken with `target=`.\n"
+        "`mark_broken` is unfenced. Transformative `supersede` and `edit_major` need assent.\n"
+        "`brain_init` has the full manual."
     )
     return "\n".join(lines)
 

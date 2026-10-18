@@ -436,6 +436,14 @@ def _apply_op(op: dict, actor: str) -> dict:
         for key, value in (op.get("frontmatter") or {}).items():
             post[key] = value
 
+        if op.get("dependency_review"):
+            from g_brain.verify import resolve_note
+            reviewed = resolve_note(op["target"].removesuffix(".md"), post.metadata, dt.date.today())
+            if reviewed["keep"]:
+                post["stale_dep"] = reviewed["keep"]
+            else:
+                post.metadata.pop("stale_dep", None)
+
         target.write_text(frontmatter.dumps(post) + "\n")
         append_commit_log(actor, op_type, op["target"], before_v, new_v, op.get("reason", ""))
 
@@ -871,12 +879,13 @@ def review_dependency(note: str, dependency: str, expected_stamp: str,
 
     expected_stamp must match stale_dep.stamp (or its exact since value for
     legacy flags without a stamp). Explain why the dependent remains valid or
-    how it was corrected. Unattended reviews are refused. The verifier clears
-    only matching review evidence; a newer dependency rewrite invalidates it.
+    how it was corrected. Unattended reviews are refused. The same versioned
+    write clears matching flags using the verifier's evidence rule. A newer
+    dependency rewrite invalidates older evidence.
     """
-    if actor not in {"agent", "human"}:
+    if not isinstance(actor, str) or actor not in {"agent", "human"}:
         return {"ok": False, "error": "dependency review requires a human-in-session actor"}
-    if len(reason.strip().split()) < 4:
+    if not isinstance(reason, str) or len(reason.strip().split()) < 4:
         return {"ok": False, "error": "explain why this dependency is now verified (at least four words)"}
     from brain_reader import normalize_path
     dest = note if note.endswith(".md") else note + ".md"
@@ -904,6 +913,7 @@ def review_dependency(note: str, dependency: str, expected_stamp: str,
                     "reason": reason.strip(), "actor": actor, "reviewed_at": _now_iso()})
     return _apply_op({"type": "edit_patch", "target": dest, "frontmatter_only": True,
                       "frontmatter": {"dependency_reviews": reviews},
+                      "dependency_review": True,
                       "reason": f"review dependency {dependency} ({expected_stamp}): {reason.strip()}"}, actor)
 
 
@@ -992,7 +1002,8 @@ _BAR_QUESTION = "Would a future agent be worse off without this, and is it recor
 # Invented paraphrases score >= 0.571, related distinct facts <= 0.167.
 NEAR_DUPLICATE_THRESHOLD = 0.55
 _RULE_DIRECTIVE = re.compile(
-    r"(?:^|[.!?\n]\s*)(?:[-*#>]+\s*)?(?:always|never|do not|every time)\b"
+    r"(?:^|[.!?\n])\s*(?:[-*#>]+\s*)?"
+    r"(?:when\b[^.!?\n,]*,\s*)?(?:always|never|do not|every time)\b"
     r"|\bmust\b|\b(?:you|agents?|we)\s+(?:should\s+)?(?:always|never)\b",
     re.I,
 )
@@ -1013,9 +1024,15 @@ def _near_duplicates(title: str, text: str) -> list[dict]:
                 continue
             if any(p in {"versions", "archive"} for p in parts):
                 continue
+            target = f"{note.path}.md"
+            try:
+                if not _resolve(target).is_file():
+                    continue
+            except ValueError:
+                continue
             score = _jaccard(tokens, _tokens(f"{note.title} {note.body}"))
             if score >= NEAR_DUPLICATE_THRESHOLD:
-                hits.append({"target": f"{note.path}.md", "title": note.title,
+                hits.append({"target": target, "title": note.title,
                              "score": round(score, 3)})
         return sorted(hits, key=lambda hit: (-hit["score"], hit["target"]))[:3]
     except Exception:  # noqa: BLE001 - a failed duplicate check must never block capture

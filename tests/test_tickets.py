@@ -70,6 +70,46 @@ def test_ticket_mcp_registration(store):
     assert {"create_ticket", "list_tickets", "close_ticket"} <= names
 
 
+def test_ticket_routes_are_mounted_by_create_api(store):
+    from g_brain.api import create_api
+    _, todos = store
+    app = FastAPI()
+    app.mount("/api", create_api())
+    with TestClient(app) as client:
+        assert client.get("/api/tickets").json() == []
+        response = client.post("/api/tickets", json={"title": "Repair fixture workflow", "project": "fixture"})
+        assert response.status_code == 200
+        item = response.json()
+        assert client.get("/api/tickets?project=fixture").json() == [item]
+        closed = client.patch("/api/tickets/" + item["slug"], json={"status": "done"})
+        assert closed.status_code == 200 and closed.json()["status"] == "done"
+        assert client.get("/api/tickets").json() == []
+        assert client.get("/api/tickets?status=done").json() == [closed.json()]
+        assert client.get("/api/todos").json() == []
+    assert todos.list_todos(status="all") == []
+
+
+def test_ticket_tools_reach_the_host_mcp(store, monkeypatch):
+    from fastmcp import Client, FastMCP
+    from g_brain import surface
+    monkeypatch.setattr(surface, "proxy_basic_memory", lambda target: FastMCP("fixture-memory"))
+    from g_brain import server
+    _, todos = store
+    assert server.todos_mcp is todos.mcp
+
+    async def exercise():
+        async with Client(server.mcp) as client:
+            names = {tool.name for tool in await client.list_tools()}
+            assert {"create_ticket", "list_tickets", "close_ticket"} <= names
+            result = await client.call_tool("create_ticket", {"title": "Repair fixture transport"})
+            assert result.data["kind"] == "ticket"
+            listed = await client.call_tool("list_tickets", {})
+            assert listed.data[0]["slug"] == result.data["slug"]
+            closed = await client.call_tool("close_ticket", {"slug": result.data["slug"]})
+            assert closed.data["status"] == "done"
+    asyncio.run(exercise())
+
+
 def test_ticket_validation(store):
     tickets, todos = store
     with pytest.raises(ValueError):
