@@ -30,6 +30,8 @@ from fastapi.responses import PlainTextResponse
 from markdown_it import MarkdownIt
 
 import g_config
+from brain_condense import CORPUS_LAYERS, is_corpus_note, read_report as condense_report
+from brain_verify import read_report as stale_report
 from brain_reader import (
     BRAIN_ROOT,
     REFS_DB,
@@ -340,25 +342,19 @@ def create_api() -> FastAPI:
 
     # ------------------------------------------------------------------- stale
     @api.get("/stale")
-    async def stale():
+    def stale():
         """Notes standing on ground that moved: the rewrite review queue."""
-        report = BRAIN_ROOT / "status" / "stale.json"
-        if not report.exists():
-            return {"checked_at": None, "outstanding": 0, "outstanding_detail": []}
-        return json.loads(report.read_text())
+        return stale_report(root=BRAIN_ROOT)
 
     # -------------------------------------------------------------- condense
     @api.get("/condense")
-    async def condense():
+    def condense():
         """Candidates for condensation: overlaps, accretion, orphans, drift."""
-        report = BRAIN_ROOT / "status" / "condense.json"
-        if not report.exists():
-            return {"checked_at": None, "backlog": 0, "counts": {}}
-        return json.loads(report.read_text())
+        return condense_report(root=BRAIN_ROOT)
 
     # ----------------------------------------------------------------- orient
     @api.get("/orient", response_class=PlainTextResponse)
-    async def orient(
+    def orient(
         cwd: str = Query("", max_length=4096), limit: int = 12,
         project: str = Query("", max_length=100),
         task: str = Query("", max_length=1000),
@@ -450,37 +446,26 @@ def _orientation_hits(notes: list[Note], project: str, task: str) -> list[Note]:
         task_score = 4 * len(tokens & words) + len(tokens & body_words)
         if not project_match and (project or not task_score):
             continue
-        mirrored = note.path.startswith(("nerves/", "lineage/"))
-        scored.append((note, task_score, mirrored))
-    # Stable tie-breaks independent of filesystem traversal; authored knowledge
-    # wins over mirrored instructions, while task relevance orders each group.
+        scored.append((note, task_score))
+    # Stable tie-breaks independent of filesystem traversal.
     scored.sort(key=lambda item: item[0].path)
     scored.sort(key=lambda item: item[0].updated or "", reverse=True)
-    scored.sort(key=lambda item: (item[2], -item[1]))
+    scored.sort(key=lambda item: -item[1])
     return [item[0] for item in scored]
 
 
 def render_orientation(cwd: str = "", limit: int = 12, project: str = "", task: str = "") -> str:
-    """Build the session-start brain block. Pure function so the hook, the
-    REST route and any future consumer share one rendering."""
-    # todos/ are a separate surface with their own tools and their own
-    # injection; counting 58 of them here would bury the corpus itself.
-    notes = [n for n in all_notes()
-             if not n.path.startswith("indexes/")
-             and not n.path.startswith("todos/")
-             and not any(p in ("versions", "archive") for p in Path(n.path).parts)]
+    """Build the session-start brain block and resolve housekeeping on read."""
+    notes = [n for n in all_notes() if is_corpus_note(n.path)]
 
     lines: list[str] = ["## Brain (long-term corpus, the cortex)"]
 
-    # A handful of notes carry the plural form in `kind` frontmatter; fold
-    # them together for display rather than showing "design 28, designs 1".
-    _singular = {"designs": "design", "findings": "finding", "ideas": "idea",
-                 "references": "reference", "sources": "source", "logs": "log"}
-    counts: dict[str, int] = {}
+    counts = dict.fromkeys(CORPUS_LAYERS, 0)
     for n in notes:
-        counts[_singular.get(n.kind, n.kind)] = counts.get(_singular.get(n.kind, n.kind), 0) + 1
-    summary = ", ".join(f"{k} {v}" for k, v in sorted(counts.items()) if k != "unknown")
-    lines.append(_orientation_text(f"{len(notes)} notes: {summary}", 400))
+        counts[Path(n.path).parts[0]] += 1
+    summary = ", ".join(f"{layer} {count}" for layer, count in counts.items()
+                        if count or layer not in ("findings", "references"))
+    lines.append(_orientation_text(f"{len(notes)} notes by layer: {summary}", 400))
 
     slug = _orientation_project(cwd, project)
     hits = _orientation_hits(notes, slug, task)
@@ -493,13 +478,10 @@ def render_orientation(cwd: str = "", limit: int = 12, project: str = "", task: 
         for n in hits[:max(0, min(limit, ORIENTATION_MAX_NOTES))]:
             flag = " [BROKEN]" if n.status == "broken" else ""
             row = f"- `{_orientation_text(n.path, 180)}`{flag}: {_orientation_text(n.title, 220)}"
-            # Short authored evidence provides context without injecting whole
-            # mirrored instructions or treating note prose as session policy.
-            if not n.path.startswith(("nerves/", "lineage/")):
-                excerpt = next((line for line in n.body[:4000].splitlines()
-                                if line.strip() and not line.lstrip().startswith(("#", "---", "```"))), "")
-                if excerpt:
-                    row += f" ({_orientation_text(excerpt, 160)})"
+            excerpt = next((line for line in n.body[:4000].splitlines()
+                            if line.strip() and not line.lstrip().startswith(("#", "---", "```"))), "")
+            if excerpt:
+                row += f" ({_orientation_text(excerpt, 160)})"
             if len(row) + 1 > budget:
                 break
             relevant.append(row)
@@ -514,33 +496,26 @@ def render_orientation(cwd: str = "", limit: int = 12, project: str = "", task: 
                      + ", ".join(f"`{_orientation_text(n.path, 80)}`" for n in broken[:5]))
 
     housekeeping: list[str] = []
-    stale_report = BRAIN_ROOT / "status" / "stale.json"
-    if stale_report.exists():
-        try:
-            data = json.loads(stale_report.read_text())
-            if data.get("outstanding"):
-                housekeeping.append(
-                    f"{data['outstanding']} note(s) stand on a dependency that "
-                    "moved and haven't been re-checked (`/api/stale`)"
-                )
-        except (OSError, json.JSONDecodeError):
-            pass
+    data = stale_report(root=BRAIN_ROOT)
+    if data.get("outstanding"):
+        message = (f"{data['outstanding']} note(s) stand on a dependency that "
+                   "moved and haven't been re-checked (`/api/stale`)")
+        if data.get("escalating"):
+            oldest = ", ".join(f"`{_orientation_text(o['note'], 70)}` ({o['age_days']}d)"
+                               for o in data["oldest_detail"][:3])
+            message += f"; {data['escalating']} flag(s) aged 14+ days, oldest: {oldest}"
+        housekeeping.append(message)
 
-    condense_report = BRAIN_ROOT / "status" / "condense.json"
-    if condense_report.exists():
-        try:
-            data = json.loads(condense_report.read_text())
-            if data.get("backlog"):
-                c = data.get("counts", {})
-                housekeeping.append(
-                    f"{data['backlog']} condensation candidate(s): "
-                    f"**{c.get('stale', 0)} possibly outdated**, "
-                    f"{c.get('overlaps', 0)} overlapping pairs, "
-                    f"{c.get('accreted', 0)} accreted, {c.get('orphans', 0)} orphans, "
-                    f"{c.get('drift', 0)} drift (run `/brain-condense`)"
-                )
-        except (OSError, json.JSONDecodeError):
-            pass
+    data = condense_report(root=BRAIN_ROOT)
+    if data.get("backlog"):
+        c = data.get("counts", {})
+        housekeeping.append(
+            f"{data['backlog']} condensation candidate(s): "
+            f"**{c.get('stale', 0)} possibly outdated**, "
+            f"{c.get('overlaps', 0)} overlapping pairs, "
+            f"{c.get('accreted', 0)} accreted, {c.get('orphans', 0)} orphans, "
+            f"{c.get('drift', 0)} drift (run `/brain-condense`)"
+        )
 
     if housekeeping:
         lines.append("\nHousekeeping: " + "; ".join(_orientation_text(item, 450) for item in housekeeping) + ".")

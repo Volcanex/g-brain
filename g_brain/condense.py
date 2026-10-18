@@ -15,15 +15,15 @@ agrees: `ai-auto` cannot perform destructive ops at all.
 
 So condensing splits in two, and this is the half that can run alone:
 
-  - **Detection** (here, on a timer): mechanical signals, no model, no writes.
-    Produces status/condense.json; the session context shows the backlog, so it never pages.
+  - **Detection** (here, on report reads): mechanical signals, no model, no writes.
+    Cached by corpus signature; manual CLI runs also produce status/condense.json.
   - **Condensation** (the `brain-condense` skill): an agent with the owner in the
     session reads this report, proposes specific merges, and executes them.
     Under the current gate most merges are its own call; only the load-bearing
     notes (>= 8 dependents, or a canonical design) stop for a yes.
 
 The split is the point. A detector that never writes cannot damage anything,
-so it can run daily and be trusted; the writing happens where someone can be
+so it can run on demand and be trusted; the writing happens where someone can be
 asked.
 """
 
@@ -31,10 +31,13 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import sys
+from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
+from threading import Lock
 
 import frontmatter
 
@@ -42,6 +45,8 @@ import g_config
 
 BRAIN_ROOT = g_config.BRAIN_ROOT
 REPORT_PATH = BRAIN_ROOT / "status" / "condense.json"
+CORPUS_LAYERS = ("designs", "ideas", "about", "hazards", "findings", "references")
+_REPORT_LOCK = Lock()
 
 # Tuned against the real corpus (84 notes, 2026-08-17), where whole-body
 # Jaccard runs median 0.041 / p95 0.098 / max 0.276: long prose shares few
@@ -56,7 +61,7 @@ REPORT_PATH = BRAIN_ROOT / "status" / "condense.json"
 OVERLAP_THRESHOLD = 0.20
 ACCRETION_STAMPS = 3       # dated appends before a note wants rewriting as prose
 
-CANONICAL_KINDS = {"design", "finding", "idea", "reference", "source", "log"}
+CANONICAL_KINDS = {"design", "finding", "idea", "reference", "source", "log", "about", "hazard"}
 
 # Words that carry no subject signal here: mostly g-system furniture that
 # appears in half the corpus and would make everything look similar, plus the
@@ -87,20 +92,30 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-def _load_notes() -> list[dict]:
+def is_corpus_note(path: str) -> bool:
+    parts = Path(path).parts
+    return (len(parts) > 1 and parts[0] in CORPUS_LAYERS
+            and not any(p.startswith(".") or p in ("versions", "archive") for p in parts)
+            and parts[-1] not in ("CLAUDE", "AGENTS", "README", "CLAUDE.md", "AGENTS.md", "README.md"))
+
+
+def _note_paths(root: Path):
+    for layer in CORPUS_LAYERS:
+        for directory, folders, files in os.walk(root / layer):
+            folders[:] = sorted(f for f in folders
+                                if not f.startswith(".") and f not in ("versions", "archive"))
+            for name in sorted(files):
+                md = Path(directory) / name
+                if name.endswith(".md") and is_corpus_note(md.relative_to(root).as_posix()):
+                    yield md
+
+
+def _load_notes(root: Path | None = None) -> list[dict]:
     """Every authored note, with the fields the signals need."""
+    root = BRAIN_ROOT if root is None else root
     out = []
-    for md in sorted(BRAIN_ROOT.rglob("*.md")):
-        rel = md.relative_to(BRAIN_ROOT)
-        parts = rel.parts
-        if any(p.startswith(".") for p in parts):
-            continue
-        if parts[0] in ("indexes", "todos", "nerves", "lineage", "status", "pdfs"):
-            continue
-        if any(p in ("versions", "archive") for p in parts):
-            continue
-        if rel.name in ("CLAUDE.md", "README.md"):
-            continue
+    for md in _note_paths(root):
+        rel = md.relative_to(root)
         try:
             post = frontmatter.load(md)
         except Exception:  # noqa: BLE001
@@ -162,8 +177,13 @@ def find_accreted(notes: list[dict]) -> list[dict]:
 def find_orphans(notes: list[dict]) -> list[dict]:
     """Notes with no link in and no link out, unreachable by navigation."""
     try:
-        from brain_reader import link_edges
-        edges = link_edges()
+        from brain_reader import Note, WIKILINK_RE, link_edges
+        edges = link_edges([
+            Note(path=n["path"], title=n["title"], kind=n["kind"], status=n["status"],
+                 version="", lineage=[], tags=n["tags"], updated=n["updated"], created="",
+                 wikilinks=sorted({m.group(1).strip() for m in WIKILINK_RE.finditer(n["body"])}))
+            for n in notes
+        ])
     except Exception:  # noqa: BLE001
         return []
     linked = {s for s, _ in edges} | {t for _, t in edges}
@@ -287,8 +307,8 @@ def find_drift(notes: list[dict]) -> list[dict]:
     return out
 
 
-def scan() -> dict:
-    notes = _load_notes()
+def scan(root: Path | None = None) -> dict:
+    notes = _load_notes(root)
     overlaps = find_overlaps(notes)
     stale = find_stale(notes)
     accreted = find_accreted(notes)
@@ -313,6 +333,28 @@ def scan() -> dict:
         "orphans": orphans,
         "drift": drift,
     }
+
+
+def _file_signature(path: Path) -> tuple:
+    try:
+        stat = path.stat()
+        return (str(path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return (str(path), None, None)
+
+
+@lru_cache(maxsize=1)
+def _cached_scan(root: Path, signature: tuple) -> dict:
+    return scan(root)
+
+
+def read_report(root: Path | None = None) -> dict:
+    """Return the detector report, reusing it until kept notes or the manifest change."""
+    root = BRAIN_ROOT if root is None else root
+    with _REPORT_LOCK:
+        signature = (_today(), _file_signature(MANIFEST),
+                     tuple(_file_signature(md) for md in _note_paths(root)))
+        return _cached_scan(root, signature)
 
 
 def main() -> int:

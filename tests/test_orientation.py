@@ -6,17 +6,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-import brain_api as B
-from brain_reader import Note
 
 
 def note(path, title='', **kwargs):
+    from brain_reader import Note
     return Note(path=path, title=title or path, kind='finding', status='active',
                 version='1', lineage=[], tags=[], updated='', created='', **kwargs)
 
 
 class OrientationTests(unittest.TestCase):
     def setUp(self):
+        global B
+        import brain_api as B
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
@@ -24,6 +25,8 @@ class OrientationTests(unittest.TestCase):
         patch.object(B, 'BRAIN_ROOT', self.root).start()
         patch.dict('os.environ', {'GCORE_MANIFEST': str(self.root / 'manifest.json')}).start()
         self.notes = patch.object(B, 'all_notes', return_value=[]).start()
+        self.stale = patch.object(B, 'stale_report', return_value={'outstanding': 0}).start()
+        self.condense = patch.object(B, 'condense_report', return_value={'backlog': 0}).start()
 
     def test_home_does_not_invent_root_project(self):
         self.notes.return_value = [note('findings/root-cause', 'A root cause')]
@@ -86,10 +89,8 @@ class OrientationTests(unittest.TestCase):
         self.notes.return_value = [note(f'findings/widget-{i}', 'Widget ' + 'x' * 4000)
                                   for i in range(40)]
         self.notes.return_value[0].status = 'broken'
-        status = self.root / 'status'
-        status.mkdir()
-        (status / 'stale.json').write_text(json.dumps({'outstanding': 9}))
-        (status / 'condense.json').write_text(json.dumps({'backlog': 8, 'counts': {'stale': 3}}))
+        self.stale.return_value = {'outstanding': 9}
+        self.condense.return_value = {'backlog': 8, 'counts': {'stale': 3}}
         result = B.render_orientation(project='widget', limit=100000)
         self.assertLessEqual(len(result), 6000)
         self.assertLessEqual(result.count('\n- '), 12)
@@ -99,6 +100,28 @@ class OrientationTests(unittest.TestCase):
         self.assertIn('3 possibly outdated', result)
         self.assertIn('[BROKEN]', result)
         self.assertNotIn('\n- ', B.render_orientation(project='widget', limit=-1))
+
+    def test_counts_layers_and_excludes_operational_notes(self):
+        self.notes.return_value = [note(f'{layer}/widget') for layer in (
+            'designs', 'ideas', 'about', 'hazards', 'findings', 'references',
+            'nerves', 'todos', 'tickets', 'indexes', 'lineage', 'sources', 'logs')]
+        self.notes.return_value += [note('designs/.history/widget'),
+                                    note('designs/widget/archive/old'),
+                                    note('designs/widget/versions/v1')]
+        result = B.render_orientation(project='widget')
+        self.assertIn('6 notes by layer: designs 1, ideas 1, about 1, hazards 1, findings 1, references 1', result)
+        self.assertEqual(result.count('\n- '), 6)
+        for layer in ('nerves', 'todos', 'tickets', 'indexes', 'lineage', 'sources', 'logs'):
+            self.assertNotIn(f'{layer}/widget', result)
+        self.assertNotIn('/.history/', result)
+        self.assertNotIn('/archive/', result)
+        self.assertNotIn('/versions/', result)
+
+    def test_empty_transitional_layers_are_omitted(self):
+        result = B.render_orientation()
+        self.assertIn('designs 0, ideas 0, about 0, hazards 0', result)
+        self.assertNotIn('findings 0', result)
+        self.assertNotIn('references 0', result)
 
     def test_default_api_and_optional_inputs(self):
         self.notes.return_value = [note('findings/widget-login', 'Widget authentication')]
