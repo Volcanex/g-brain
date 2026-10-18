@@ -23,6 +23,9 @@ from fastapi import APIRouter, HTTPException
 from fastmcp import FastMCP
 from pydantic import BaseModel
 
+from g_todos.text import normalize_text, provenance_for
+from g_todos.tickets import create_tickets_router, register_tools
+
 BRAIN_ROOT = Path(os.environ.get("BRAIN_ROOT", Path.home() / "brain")).expanduser()
 TODOS_DIR = BRAIN_ROOT / "todos"
 
@@ -46,8 +49,43 @@ EXPIRY_AFTER_DUE_DAYS = 30
 mcp = FastMCP("brain-todos")
 
 
-def _today() -> str:
+def today() -> str:
     return dt.date.today().isoformat()
+
+
+_today = today  # Compatibility for existing callers.
+
+
+_MACHINE_ALERT = re.compile(
+    r"\b(?:dependabot|CVE(?:-\d+)*|secret[- ]scan|GitGuardian)\b|"
+    r"\b(?:CI|workflow|build|deploy(?:ment)?|service|uptime|cron)\b[^\n.!?]{0,80}"
+    r"\b(?:fail(?:ed|ure|ing)?|down|outage|alert)\b|"
+    r"\b(?:fail(?:ed|ure|ing)?|down)\b[^\n.!?]{0,60}"
+    r"\b(?:CI|workflow|build|deploy(?:ment)?|service|uptime|cron)\b", re.I)
+_PROJECT_WORK = re.compile(
+    r"captured from the pulse page|"
+    r"^(?:finish|ship|integrate|implement|refactor|merge)\b|"
+    r"\b(?:branch|commit|pull request|PR|repo(?:sitory)?)\b|"
+    r"\b(?:agent should|Claude|Codex|Sol)\b|"
+    r"\b(?:code changes?|fix(?:ing)? (?:a |the )?bug|auth module)\b", re.I)
+
+
+def _prepare(title, body, provenance):
+    title = normalize_text(title, one_line=True)
+    body = normalize_text(body)
+    provenance = provenance_for(**{k: (provenance or {}).get(k)
+                                  for k in ("requester", "composer", "source")})
+    if not title:
+        raise ValueError("title is required")
+    text = title + "\n" + body
+    if _MACHINE_ALERT.search(text):
+        raise ValueError("Machine alerts belong in the alert spine (brain_alert), or nowhere; not in todos")
+    if provenance["requester"] != "gabriel":
+        if _PROJECT_WORK.search(text):
+            raise ValueError("Project status and agent work belong in create_ticket")
+        if len(body) > 800:
+            raise ValueError("Please supply one short line for the body (at most 800 characters)")
+    return title, body, provenance
 
 
 # ----------------------------------------------------- reminder ladders
@@ -347,7 +385,7 @@ def _load(slug: str) -> frontmatter.Post:
     p = _path_for(slug)
     if not p.exists():
         raise FileNotFoundError(slug)
-    return frontmatter.load(p)
+    return _effective_post(frontmatter.load(p))
 
 
 def _save(slug: str, post: frontmatter.Post) -> None:
@@ -357,7 +395,7 @@ def _save(slug: str, post: frontmatter.Post) -> None:
 
 
 def _serialize(slug: str, post: frontmatter.Post) -> dict[str, Any]:
-    md = post.metadata
+    md = _effective_post(post).metadata
     out = {
         "slug": slug,
         "permalink": str(md.get("permalink") or f"brain/todos/{slug}"),
@@ -384,6 +422,9 @@ def _serialize(slug: str, post: frontmatter.Post) -> dict[str, Any]:
         "expires": md.get("expires") or None,
         "resolved_on": str(md["resolved_on"]) if md.get("resolved_on") else None,
         "body": post.content,
+        "provenance": provenance_for(**{k: (md.get("provenance") or {}).get(k)
+                                        for k in ("requester", "composer", "source")}),
+        "source_key": md.get("source_key"),
     }
     for _k in ("due", "expires"):
         if out[_k] is not None:
@@ -397,7 +438,7 @@ def _iter_todos():
     for p in sorted(TODOS_DIR.glob("*.md")):
         slug = p.stem
         try:
-            yield slug, frontmatter.load(p)
+            yield slug, _effective_post(frontmatter.load(p))
         except Exception:
             continue
 
@@ -410,7 +451,7 @@ def _filter(
     relates_to: str | None,
 ):
     for slug, post in todos:
-        s = str(post.metadata.get("status") or "open")
+        s = str(_effective_post(post).metadata.get("status") or "open")
         if status and status != "all" and s != status:
             continue
         if priority and str(post.metadata.get("priority") or "") != priority:
@@ -449,12 +490,96 @@ def _default_expires(priority: str, due: str | None, rrule: str | None) -> str |
     return (dt.date.today() + dt.timedelta(days=days)).isoformat()
 
 
-def _create(
+def _effective_post(post, on=None):
+    """A read derives expiry without mutating the stored note."""
+    post = frontmatter.Post(post.content, **post.metadata)
+    md = post.metadata
+    if str(md.get("status") or "open") != "open":
+        return post
+    exp = md.get("expires")
+    if not exp:
+        exp = _default_expires(str(md.get("priority") or "P2"), md.get("due"), md.get("rrule"))
+        days = EXPIRY_DAYS.get(str(md.get("priority") or "P2"))
+        if exp and days and not md.get("due") and md.get("created"):
+            try:
+                exp = (dt.date.fromisoformat(str(md["created"])) + dt.timedelta(days=days)).isoformat()
+            except ValueError:
+                pass
+    if exp:
+        post["expires"] = str(exp)
+        try:
+            if dt.date.fromisoformat(str(exp)) < dt.date.fromisoformat(on or today()):
+                post["status"] = "expired"
+        except ValueError:
+            pass
+    return post
+
+
+def iter_todos():
+    """Yield (slug, Post) pairs with expiry applied at read time."""
+    yield from _iter_todos()
+
+
+def serialize(slug, post):
+    return _serialize(slug, post)
+
+
+def get(slug):
+    """Read a todo Post, raising FileNotFoundError when absent."""
+    return _load(slug)
+
+
+def _by_source_key(source_key):
+    if source_key:
+        for slug, post in iter_todos():
+            if post.metadata.get("source_key") == source_key:
+                return serialize(slug, post)
+    return None
+
+
+def upsert(slug, fields, body, provenance, source_key=None):
+    """Write a known todo through the same policy as create.
+
+    The same slug/key may be reconciled by its inlet; a key on another slug
+    dedupes without writing. Use create for event-style, write-once ingestion.
+    """
+    _path_for(slug)
+    existing = _by_source_key(source_key)
+    if existing and existing["slug"] != slug:
+        return {**existing, "deduped": True}
+    try:
+        post = get(slug)
+    except FileNotFoundError:
+        post = frontmatter.Post("", kind="todo", permalink=f"brain/todos/{slug}",
+                                status="open", priority="P2", created=today())
+    for key, value in fields.items():
+        if key in ("kind", "permalink", "created", "provenance", "source_key"):
+            continue
+        if value is None:
+            post.metadata.pop(key, None)
+        else:
+            post[key] = value
+    title, body, provenance = _prepare(post.get("title"), body, provenance)
+    post.metadata.setdefault("priority", "P2")
+    post.metadata.setdefault("status", "open")
+    if post.get("priority") not in VALID_PRIORITIES:
+        raise ValueError(f"priority must be one of {sorted(VALID_PRIORITIES)}")
+    if post.get("status") not in VALID_STATUSES:
+        raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
+    post["title"], post.content, post["provenance"] = title, body, provenance
+    post["summary"] = normalize_text(post.get("summary") or title, one_line=True)
+    if source_key:
+        post["source_key"] = source_key
+    _save(slug, post)
+    return serialize(slug, post)
+
+
+def create(
     title: str,
-    priority: str,
-    due: str | None,
-    relates_to: list[str] | None,
-    body: str | None,
+    priority: str = "P2",
+    due: str | None = None,
+    relates_to: list[str] | None = None,
+    body: str | None = None,
     summary: str | None = None,
     category: str | None = None,
     remind_min: int | None = None,
@@ -467,51 +592,31 @@ def _create(
     rrule: str | None = None,
     location: str | None = None,
     expires: str | None = None,
+    requester: str | None = None,
+    composer: str | None = None,
+    source: str | None = None,
+    source_key: str | None = None,
 ) -> dict[str, Any]:
+    """Create an owner action, recording origin and deduping all statuses."""
+    existing = _by_source_key(source_key)
+    if existing:
+        return {**existing, "deduped": True}
+    title, body, provenance = _prepare(title, body, provenance_for(requester, composer, source))
     if priority not in VALID_PRIORITIES:
         raise ValueError(f"priority must be one of {sorted(VALID_PRIORITIES)}")
-    if not title or not title.strip():
-        raise ValueError("title is required")
-
-    base = _slugify(title)
-    slug = _allocate_slug(base)
-
-    post = frontmatter.Post(content=(body or "").rstrip() + ("\n" if body else ""))
-    post["title"] = title
-    post["kind"] = "todo"
-    post["permalink"] = f"brain/todos/{slug}"
-    post["status"] = "open"
-    post["priority"] = priority
-    post["created"] = _today()
-    if due:
-        post["due"] = due
-    expires_at = expires if expires is not None else _default_expires(priority, due, rrule)
-    if expires_at:
-        post["expires"] = expires_at
-    if relates_to:
-        post["relates_to"] = list(relates_to)
-    if category:
-        post["category"] = category
-    if remind_min is not None:
-        post["remind_min"] = remind_min
-    if reminders:
-        post["reminders"] = [int(m) for m in reminders]
-    if vital:
-        post["vital"] = True
-    if urgent:
-        post["urgent"] = True
-    for _k, _v in (("start", start), ("end", end), ("all_day", all_day),
-                   ("rrule", rrule), ("location", location)):
-        if _v is not None:
-            post[_k] = _v
-    post["summary"] = summary or title
-
-    _save(slug, post)
-    return _serialize(slug, post)
+    fields = dict(title=title, priority=priority, due=due, relates_to=relates_to,
+                  summary=summary or title, category=category, remind_min=remind_min,
+                  reminders=[int(m) for m in reminders] if reminders else None,
+                  vital=vital, urgent=urgent, start=start, end=end, all_day=all_day,
+                  rrule=rrule, location=location,
+                  expires=expires if expires is not None else _default_expires(priority, due, rrule))
+    return upsert(_allocate_slug(_slugify(title)), fields, body, provenance, source_key)
 
 
 def _update(slug: str, fields: dict[str, Any]) -> dict[str, Any]:
     post = _load(slug)
+    original_keys = set(post.metadata)
+    fields = fields.copy()
     body = fields.pop("body", None)
 
     # A recurring todo is one note covering many days, so "done" has to attach
@@ -608,8 +713,8 @@ def _update(slug: str, fields: dict[str, Any]) -> dict[str, Any]:
     if body is not None:
         post.content = str(body).rstrip() + "\n"
 
-    _save(slug, post)
-    return _serialize(slug, post)
+    updated = {key: post.metadata.get(key) for key in original_keys | set(post.metadata)}
+    return upsert(slug, updated, post.content, post.get("provenance"), post.get("source_key"))
 
 
 def _mark_done(slug: str) -> dict[str, Any]:
@@ -632,6 +737,7 @@ def _resolve_slug(permalink_or_slug: str) -> str:
 def create_todo(
     title: str,
     priority: str,
+    requester: str,
     due: str | None = None,
     relates_to: list[str] | None = None,
     body: str | None = None,
@@ -645,6 +751,9 @@ def create_todo(
     rrule: str | None = None,
     location: str | None = None,
     expires: str | None = None,
+    composer: str = "agent",
+    source: str = "mcp",
+    source_key: str | None = None,
 ) -> dict:
     """Create a TODO note under todos/<slug>.md.
 
@@ -669,15 +778,20 @@ def create_todo(
         substituted for it, so you cannot accidentally leave a todo with fewer
         warnings than the floor of two. Use it when something needs more notice
         than its category gives by default.
-      expires: optional ISO date after which the sweep retires this TODO. Omit
+      requester: who asked for this owner action (gabriel, agent, or automation id).
+      composer: who wrote the words; defaults to agent.
+      source: originating event; defaults to mcp.
+      source_key: optional stable event key; retries return the original todo.
+      expires: optional ISO date after which this TODO reads as expired. Omit
         to take the default for its priority (see EXPIRY_DAYS); pass None-able
         explicit dates only when the caller genuinely knows the shelf life.
 
     Returns the created todo as a dict.
     """
-    return _create(title, priority, due, relates_to, body, category=category, remind_min=remind_min,
-                   reminders=reminders, vital=vital, start=start, end=end, all_day=all_day, rrule=rrule,
-                   location=location, expires=expires)
+    return create(title, priority, due, relates_to, body,
+                  requester=requester, composer=composer, source=source, source_key=source_key,
+                  category=category, remind_min=remind_min, reminders=reminders, vital=vital,
+                  start=start, end=end, all_day=all_day, rrule=rrule, location=location, expires=expires)
 
 
 @mcp.tool()
@@ -729,6 +843,9 @@ def mark_done(permalink: str) -> dict:
     return _mark_done(slug)
 
 
+register_tools(mcp)
+
+
 # --------------------------------------------------------------------- REST
 
 class _TodoCreate(BaseModel):
@@ -745,6 +862,14 @@ class _TodoCreate(BaseModel):
     end: str | None = None
     all_day: bool | None = None
     rrule: str | None = None
+    summary: str | None = None
+    remind_min: int | None = None
+    location: str | None = None
+    expires: str | None = None
+    requester: str | None = None
+    composer: str | None = None
+    source: str | None = None
+    source_key: str | None = None
 
 
 class _TodoPatch(BaseModel):
@@ -961,21 +1086,7 @@ def create_router() -> APIRouter:
     @r.post("")
     async def create_(payload: _TodoCreate):
         try:
-            return _create(
-                payload.title,
-                payload.priority,
-                payload.due,
-                payload.relates_to,
-                payload.body,
-                category=payload.category,
-                reminders=payload.reminders,
-                vital=payload.vital,
-                urgent=payload.urgent,
-                start=payload.start,
-                end=payload.end,
-                all_day=payload.all_day,
-                rrule=payload.rrule,
-            )
+            return create(**payload.model_dump())
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -992,66 +1103,33 @@ def create_router() -> APIRouter:
     return r
 
 
-def expire_stale(today: str | None = None, apply: bool = True) -> dict:
-    """Retire open TODOs past their expiry. Never deletes - status goes to
-    ``expired`` and the note stays searchable, per the archive-not-delete rule.
+def expire_stale(today: str | None = None, apply: bool = False) -> dict:
+    """Report derived expiry; the legacy apply argument no longer writes.
 
-    Backfills ``expires`` on TODOs created before the field existed, deriving it
-    from what the note already carries, so the pre-existing backlog retires too
-    rather than sitting open forever.
+    Keep the report shape for manual/old timer callers. `backfilled` counts
+    legacy expiry dates derived in memory, and `applied` is always false.
     """
     now = dt.date.fromisoformat(today) if today else dt.date.today()
-    retired, backfilled = [], []
-    for slug, post in _iter_todos():
-        md = post.metadata
-        if str(md.get("status") or "open") != "open":
+    retired, backfilled = [], 0
+    for path in sorted(TODOS_DIR.glob("*.md")):
+        slug, post = path.stem, frontmatter.load(path)
+        if str(post.get("status") or "open") != "open":
             continue
-        exp = md.get("expires")
-        if not exp:
-            exp = _default_expires(
-                str(md.get("priority") or "P2"),
-                str(md["due"]) if md.get("due") else None,
-                md.get("rrule"),
-            )
-            if not exp:
-                continue
-            # derive from creation, not from today, or nothing old ever expires
-            created = md.get("created")
-            if not md.get("due") and created:
-                try:
-                    days = EXPIRY_DAYS.get(str(md.get("priority") or "P2"))
-                    exp = (dt.date.fromisoformat(str(created))
-                           + dt.timedelta(days=days)).isoformat() if days else None
-                except ValueError:
-                    pass
-            if not exp:
-                continue
-            if apply:
-                post["expires"] = exp
-                _save(slug, post)
-            backfilled.append(slug)
-        try:
-            if dt.date.fromisoformat(str(exp)) > now:
-                continue
-        except ValueError:
-            continue
-        retired.append({"slug": slug, "title": str(md.get("title") or slug),
-                        "priority": str(md.get("priority") or "P2"), "expires": str(exp)})
-        if apply:
-            post["status"] = "expired"
-            post.content = (post.content.rstrip() +
-                            f"\n\nExpired {now.isoformat()}: still open at its expiry date, "
-                            "retired by the sweep. Reopen with update_todo if it still matters.\n")
-            _save(slug, post)
-    return {"checked_at": now.isoformat(), "backfilled": len(backfilled),
-            "retired": len(retired), "retired_detail": retired, "applied": apply}
+        effective = _effective_post(post, on=now.isoformat())
+        if not post.get("expires") and effective.get("expires"):
+            backfilled += 1
+        if effective.get("status") == "expired":
+            retired.append({"slug": slug, "title": str(post.get("title") or slug),
+                            "priority": str(post.get("priority") or "P2"),
+                            "expires": str(effective["expires"])})
+    return {"checked_at": now.isoformat(), "backfilled": backfilled,
+            "retired": len(retired), "retired_detail": retired, "applied": False}
 
 
 def main() -> int:
     import json as _json
-    import sys as _sys
-    apply = "--dry-run" not in _sys.argv
-    print(_json.dumps(expire_stale(apply=apply), indent=2))
+    # Both the old timer invocation and --dry-run are now read-only reports.
+    print(_json.dumps(expire_stale(), indent=2))
     return 0
 
 

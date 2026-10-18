@@ -9,8 +9,8 @@ Pulse lives in ~/brain/.pulse/ (dot-prefixed: invisible to the brain reader
 and the secondary graph, like .quarantine/). It never goes through
 brain-commit and is never versioned. Its job is to feed the brain's L6
 commitment layer: a scheduled Claude agent reads an INLET, reasons over it,
-and opens todos via the existing create_todo tool. No rules, no regex:
-inference is always the model's. If the Claude subscription is down, the
+and opens todos via the existing create_todo tool. Inference is the model's;
+the todo write boundary checks owner action and provenance. If the Claude subscription is down, the
 pulse is down; there is no degraded tier and no backup.
 
 Two concepts:
@@ -162,8 +162,8 @@ def _todos_soon(days: int = 7) -> list[str]:
         import brain_todos
         horizon = (dt.date.today() + dt.timedelta(days=days)).isoformat()
         out = []
-        for slug, post in brain_todos._iter_todos():
-            t = brain_todos._serialize(slug, post)
+        for slug, post in brain_todos.iter_todos():
+            t = brain_todos.serialize(slug, post)
             if t.get("status") != "open":
                 continue
             when = str(t.get("due") or t.get("start") or "")[:10]
@@ -205,10 +205,31 @@ def _brief_age_line() -> str:
     return f"Latest brief: {date}."
 
 
+def _about_block() -> str:
+    lines = []
+    for path in sorted((BRAIN_ROOT / "about").glob("*.md")):
+        try:
+            post = frontmatter.load(path)
+            title = " ".join(str(post.get("title") or path.stem).split())[:120]
+            summary = " ".join(str(post.get("summary") or "").split())[:240]
+            if post.get("kind") != "fact" or not summary:
+                continue
+            line = f"- {title}: {summary}"
+            if sum(len(item) + 1 for item in lines) + len(line) > 1600:
+                break
+            lines.append(line)
+        except (OSError, ValueError):
+            continue
+        if len(lines) == 40:
+            break
+    return "About Gabriel\n" + "\n".join(lines) if lines else ""
+
+
 def composed_payload() -> str:
     """The pulse payload that rides into every session: page, near todos,
     health, brief age. Each section degrades to nothing rather than erroring."""
-    sections = []
+    about = _about_block()
+    sections = [about] if about else []
     try:
         page = PAGE_PATH.read_text().strip() if PAGE_PATH.exists() else ""
     except Exception:
@@ -263,9 +284,10 @@ def pulse_brief() -> dict:
     are durable. Returns {date, body}, or a note if none has been generated.
     """
     latest = _latest_brief()
-    if latest is None:
-        return {"date": None, "body": "No brief generated yet."}
-    date, body = latest
+    date, body = latest if latest else (None, "No brief generated yet.")
+    about = _about_block()
+    if about:
+        body += "\n\n" + about
     return {"date": date, "body": body}
 
 
@@ -356,11 +378,7 @@ def create_router() -> APIRouter:
 
     @r.get("/brief")
     async def brief():
-        latest = _latest_brief()
-        if latest is None:
-            return {"date": None, "body": "No brief generated yet."}
-        date, body = latest
-        return {"date": date, "body": body}
+        return pulse_brief()
 
     # Read-only by design: the page is injected into every session, so a REST
     # write path on this unauthenticated face would be a prompt-injection
@@ -411,8 +429,7 @@ def _cli(argv: list[str] | None = None) -> int:
         print(json.dumps(_serialize_inlet(args.inlet_id, post, include_state=True), indent=2, default=str))
         return 0
     if args.cmd == "brief":
-        latest = _latest_brief()
-        print(latest[1] if latest else "No brief generated yet.")
+        print(pulse_brief()["body"])
         return 0
     if args.cmd == "page":
         print(composed_payload(), end="")

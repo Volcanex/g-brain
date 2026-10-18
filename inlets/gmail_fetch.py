@@ -128,6 +128,7 @@ def main():
         typ, msg_data = m.uid("fetch", str(uid), "(BODY.PEEK[])")
         msg = email.message_from_bytes(msg_data[0][1])
         print("=" * 8, f"uid {uid}")
+        print("source_id:", str(msg.get("Message-ID") or uid).strip())
         print("From:", _decode(msg.get("From")))
         print("Date:", msg.get("Date"))
         print("Subject:", _decode(msg.get("Subject")))

@@ -3,7 +3,7 @@
 The distil model reads `gmail_fetch` output once, then hands over its decisions as
 JSON instead of spending a turn per todo (every Codex turn re-sends ~20K tokens):
 
-    {"todos": [{"title": "...", "priority": "P1", "due": "YYYY-MM-DD", "body": "..."}],
+    {"todos": [{"source_id": "<message-id>", "title": "...", "priority": "P1", "due": "YYYY-MM-DD", "body": "..."}],
      "snapshot": "one paragraph: threads awaiting a reply, upcoming bills",
      "summary": "one line"}
 
@@ -29,17 +29,39 @@ def _call(path, payload=None):
 
 
 def apply(plan):
-    open_titles = {t["title"].strip().lower() for t in _call("/todos?status=open")}
+    from brain_todos import normalize_text
+
+    todos = plan.get("todos", [])
+    if any(not str(todo.get("source_id") or "").strip() for todo in todos):
+        raise ValueError("Every todo needs source_id from the mail's Message-ID or IMAP UID")
+    existing = _call("/todos?status=all")
+    open_titles = {normalize_text(t["title"], one_line=True).casefold()
+                   for t in existing if t.get("status", "open") == "open"}
+    seen_keys = {t["source_key"] for t in existing if t.get("source_key")}
+    ordinals = {}
     made = skipped = 0
-    for todo in plan.get("todos", []):
-        if todo["title"].strip().lower() in open_titles:
+    for todo in todos:
+        source_id = str(todo["source_id"]).strip()
+        ordinals[source_id] = ordinals.get(source_id, 0) + 1
+        source = f"gmail:{source_id}"
+        key = f"{source}#{ordinals[source_id]}"
+        title = normalize_text(todo["title"], one_line=True)
+        normalized = title.casefold()
+        if key in seen_keys or normalized in open_titles:
             skipped += 1
             continue
-        body = {k: todo[k] for k in ("title", "priority", "due", "body") if todo.get(k)}
-        body["body"] = (body.get("body", "") + "\n\nsource: pulse/gmail").strip()
-        if "slug" not in _call("/todos", body):
-            raise RuntimeError(f"todo not created: {todo['title']}")
-        made += 1
+        payload = {k: todo[k] for k in ("priority", "due", "body") if todo.get(k)}
+        payload.update(title=title, requester="pulse.gmail.distil", composer="pulse.gmail.distil",
+                       source=source, source_key=key)
+        result = _call("/todos", payload)
+        if "slug" not in result:
+            raise RuntimeError(f"todo not created: {title}")
+        seen_keys.add(key)
+        open_titles.add(normalized)
+        if result.get("deduped"):
+            skipped += 1
+        else:
+            made += 1
     import brain_pulse
     brain_pulse.record_state("gmail", plan.get("snapshot") or "No threads awaiting a reply.", plan.get("summary"))
     from inlets import gmail_fetch
