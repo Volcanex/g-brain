@@ -97,8 +97,14 @@ def test_capture_apply_forces_ai_auto_and_fails_loudly(monkeypatch):
     seen = []
     def fake(**kw):
         seen.append(kw)
-        return {"ok": kw["title"] != "bad", "action": "created", "target": "findings/x.md", "error": "nope"}
+        return {"ok": kw["title"] != "bad", "action": "created", "target": "hazards/x.md", "error": "nope"}
     monkeypatch.setattr(brain_commit, "brain_note", fake)
-    out = brain_capture.apply({"notes": [{"text": "t", "title": "good"}, {"text": "t", "title": "bad"}]})
+    out = brain_capture.apply({"notes": [
+        {"text": "t", "kind": "hazard", "title": "good", "bar": "Saves a repeat failure, recorded nowhere else."},
+        {"text": "t", "layer": "about", "title": "bad", "bar": "Preserves a preference absent elsewhere."}]})
     assert [k["actor"] for k in seen] == ["ai-auto", "ai-auto"]
     assert [r["ok"] for r in out] == [True, False]
+
+    assert [k["layer"] for k in seen] == ["hazard", "about"]
+    assert all(k["bar"] for k in seen)
+    assert all("kind" not in k for k in seen)

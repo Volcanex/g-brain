@@ -6,8 +6,9 @@ brain MCP gave the miner are plain commands here:
     python -m brain_capture search "<query>" [...]   rank existing notes by overlap
     python -m brain_capture apply < plan.json         write notes (actor ai-auto) + a pulse line
 
-plan.json: {"notes": [{"text": "...", "kind": "finding", "title": "...", "target": "designs/x.md",
-            "summary": "...", "tags": []}], "pulse": "one currently-working-on line or empty"}
+plan.json: {"notes": [{"text": "...", "layer": "design", "bar": "why this matters and exists nowhere else",
+            "title": "...", "target": "designs/x.md", "summary": "...", "tags": []}],
+            "pulse": "one currently-working-on line or empty"}
 `target` thickens an existing note (brain_note appends instead of colliding). Writes go
 through brain_commit.brain_note, so lineage, the commit log and index rebuild are unchanged;
 only `actor` is forced to ai-auto. Exit 1 if any write failed.
@@ -19,7 +20,8 @@ import sys
 import g_config
 
 BRAIN_ROOT = g_config.BRAIN_ROOT
-DIRS = ("designs", "findings", "ideas", "references", "sources")
+DIRS = ("designs", "ideas", "about", "hazards")
+KIND_LAYERS = {"design": "design", "idea": "idea", "fact": "about", "hazard": "hazard"}
 WORD = re.compile(r"[a-z0-9][a-z0-9_.-]{3,}")
 
 
@@ -64,10 +66,17 @@ def apply(plan):
     from brain_commit import brain_note
     results = []
     for note in plan.get("notes", []):
-        out = brain_note(text=note["text"], kind=note.get("kind", "finding"), target=note.get("target"),
+        title = note.get("title") or note["text"][:40]
+        layer = note.get("layer") or KIND_LAYERS.get(note.get("kind"))
+        if layer not in KIND_LAYERS.values():
+            results.append({"ok": True, "action": "skipped", "title": title,
+                            "reason": "No clear layer mapping. Use design, idea, about or hazard."})
+            continue
+        out = brain_note(text=note["text"], layer=layer, bar=note.get("bar"), target=note.get("target"),
                          title=note.get("title"), tags=note.get("tags"), summary=note.get("summary"),
                          actor="ai-auto")
-        results.append({"title": note.get("title") or note["text"][:40], **{k: out.get(k) for k in ("ok", "action", "target", "error")}})
+        results.append({"title": title, **{k: out[k] for k in
+                        ("ok", "action", "target", "error", "near_duplicates", "hint") if k in out}})
     pulse = (plan.get("pulse") or "").strip()
     if pulse:
         import brain_pulse

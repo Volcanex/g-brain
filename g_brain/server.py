@@ -57,34 +57,36 @@ def load_master_index() -> str:
 _POINTER = """\
 # Brain: quick orientation
 
-Memory routing rule: **has a date → `create_todo`, true now → `pulse_note`, \
-true always → `brain_note`**.
+Memory routing rule: **has a date and is Gabriel's to do -> `create_todo`; \
+machine or agent work -> `create_ticket`; true now -> `pulse_note`; \
+true always -> `brain_note(text, layer, bar=...)`**.
 
-`brain_note(text, kind)` is the default write path into the long-term corpus: \
-one call, one fact, no plan_id, no permission needed. Use it *during* the work, \
-the moment something true-always emerges: a decision, a finding, how a system \
-actually behaves, a gotcha that cost you an hour. Capturing is part of the job, \
-not a ceremony at the end of it, and you do not ask first: additive captures are \
-yours to make. A brain that only gets written when someone remembers to ask is a \
-brain that goes stale, which is exactly what happened here.
+Capture freely during the work when a future agent would be worse off without it \
+and it is recorded nowhere else. Choose a layer:
+- `design`: Gabriel's own designs, the main job.
+- `idea`: cross-domain ideas no project owns yet.
+- `about`: facts about Gabriel, preferences, people, decisions and their reasons.
+- `hazard`: ops hazards and external quirks that are not gates yet.
 
-Before writing, check what's already there (`search_notes`, or the orientation block \
-injected at session start). Thicken an existing note via `target=` rather than \
-starting a near-duplicate. Supply `summary=` on corrections with the current \
-whole-note summary; otherwise the old summary is visibly marked for review.
+Project canon belongs in the project's repo docs. Rules checked every run belong \
+as gates in g-levels (`glevels`, `/home/gabriel/g-levels`). Standing directives get \
+an advisory pointer there. `nerves/` is read-only, synced from GitHub.
 
-Use your judgement, and commit when you're confident. Overwrites are the one \
-thing to ask about: `supersede` and `edit_major` destroy existing knowledge, so \
-ask the owner (two lines on what changes and why) then set `assent=True` and \
-execute it yourself. `actor` stays `"agent"`: it records who wrote the note, \
-not who approved it. `mark_broken` isn't fenced: flagging something as \
-no-longer-true costs nothing, and leaving a stale note unflagged costs more.
+Search with `search_notes` before writing. A new note needs a one-line `bar=` \
+answer: would a future agent be worse off without this, and is it recorded nowhere \
+else? Near-duplicates return up to three candidates. Thicken with `target=<path>` \
+or use `distinct=True` if it really is separate. Appends, including an existing \
+slug, need no bar. Supply `summary=` for the current whole note, otherwise an \
+append marks the old summary for review. `kind=design|idea` is a deprecated alias.
 
-Structural writes go through `propose_commit` → `execute_commit` and stamp every \
-dependent with `stale_dep`, so nothing silently stands on ground that moved. \
-Use `review_dependency` after reading both notes to record review of an exact \
-stale stamp; unrelated edits never clear it. Call `brain_init` for the full \
-manual before structural work.
+`supersede` and transformative `edit_major` need the owner's yes: explain what \
+changes and why, then set `assent=True`. `actor` records who wrote it, not who \
+approved it. Unattended `ai-auto` cannot do either. `mark_broken` is unfenced.
+
+Structural writes use `propose_commit` -> `execute_commit` and stamp dependents \
+with `stale_dep`. Read both notes before `review_dependency` for the exact stamp. \
+Unrelated edits never clear it. Call `brain_init` for the full manual before \
+structural work.
 """
 
 basic_memory_proxy = proxy_basic_memory(BASIC_MEMORY_URL)
@@ -114,14 +116,13 @@ def brain_init() -> str:
 
     **Call this on first interaction with the brain.** Returns two sections:
 
-    1. The operating manual (CLAUDE.md), conventions you must follow: the seven
-       kinds, commit flow, versioning, sources vs references, broken propagation.
+    1. The operating manual (CLAUDE.md), conventions you must follow: the layers,
+       capture bar, commit flow, versioning, sources and broken propagation.
     2. The master index, a map of every note cluster with note counts and previews,
        so you can orient immediately without further tool calls.
 
-    The manual is also delivered as MCP `instructions` at session start; this tool
-    is a fallback for clients that don't honor `instructions`, and lets you re-read
-    both manual and index mid-session.
+    MCP `instructions` give a short routing pointer at session start. This tool
+    returns the full manual and index when deeper corpus work needs them.
 
     After brain_init, open the relevant topic index (e.g. read_note "indexes/designs")
     before diving into individual notes.
