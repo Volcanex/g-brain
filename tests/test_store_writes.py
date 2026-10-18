@@ -84,3 +84,35 @@ def test_atomic_write_preserves_prior_record_on_replace_failure(store, monkeypat
     assert replacements == [path]
     assert path.read_bytes() == before
     assert sorted(p.name for p in directory.iterdir() if p.name != ".lock") == [path.name]
+
+
+def test_atomic_write_keeps_mode_and_new_files_follow_umask(tmp_path):
+    import os
+    from g_todos.storage import atomic_write
+
+    existing = tmp_path / "existing.md"
+    existing.write_text("old")
+    existing.chmod(0o664)
+    atomic_write(existing, "new")
+    assert existing.stat().st_mode & 0o777 == 0o664
+    umask = os.umask(0o022)
+    try:
+        atomic_write(tmp_path / "fresh.md", "new")
+    finally:
+        os.umask(umask)
+    assert (tmp_path / "fresh.md").stat().st_mode & 0o777 == 0o644
+
+
+def test_root_writer_leaves_store_owned_by_its_user(tmp_path):
+    import os
+    from g_todos.storage import atomic_write, store_lock
+
+    if os.geteuid() != 0:
+        pytest.skip("ownership hand-off only applies to root writers")
+    store = tmp_path / "todos"
+    store.mkdir()
+    os.chown(store, 65534, 65534)
+    with store_lock(store):
+        atomic_write(store / "record.md", "text")
+    assert (store / "record.md").stat().st_uid == 65534
+    assert (store / ".lock").stat().st_uid == 65534

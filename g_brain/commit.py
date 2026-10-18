@@ -628,6 +628,7 @@ def _do_supersede(op: dict, actor: str) -> dict:
     _refuse_managed_store(versions_dir)
     versions_dir.mkdir(exist_ok=True)
     archive_path = versions_dir / f"v{old_major}.md"
+    _refuse_managed_store(archive_path)
     if archive_path.exists():
         return {"ok": False, "error": f"archive already exists: {archive_path.relative_to(BRAIN_ROOT)}"}
 
@@ -701,6 +702,7 @@ def supersede_section(note: str, section_heading: str, reason: str,
     while archive_path.exists():
         archive_path = archive_dir / f"{target.stem}-{slug}-{_today()}-{n}.md"
         n += 1
+    _refuse_managed_store(archive_path)
     archive_path.write_text(
         f"---\nfrom: {note}\ncut_at: {_today()}\nreason: {reason}\n---\n\n{removed}"
     )

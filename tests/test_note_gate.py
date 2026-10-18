@@ -395,3 +395,35 @@ def test_extensionless_note_never_suggests_its_md_namesake(corpus):
     seed(root, "hazards/shared.md", "An unrelated cobalt valve history")
     out = commit.brain_note(BODY, "hazard", title="Amber buffer drain", bar=BAR)
     assert all(hit["target"] != "hazards/shared.md" for hit in out.get("near_duplicates", []))
+
+
+def _dangling_archive_links(root, folder, names):
+    (root / "todos").mkdir(exist_ok=True)
+    (root / folder).mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (root / folder / name).symlink_to(root / "todos" / f"planted-{name}")
+
+
+def test_supersede_archive_cannot_land_in_todos_through_a_link(corpus):
+    root, commit = corpus
+    seed(root, "designs/thing/current.md", "Thing")
+    _dangling_archive_links(root, "designs/thing/versions", ["v0.md", "v1.md"])
+    plan = commit.propose_commit("Replace an invented design")
+    result = commit.execute_commit(plan["plan_id"], [{
+        "type": "supersede", "target": "designs/thing/current.md", "body": BODY, "assent": True,
+    }])
+    assert "create_todo/update_todo" in str(result)
+    assert list((root / "todos").iterdir()) == []
+
+
+def test_section_archive_cannot_land_in_todos_through_a_link(corpus):
+    import datetime as dt
+
+    root, commit = corpus
+    seed(root, "designs/thing.md", "Thing", "## Detail\nOriginal wording.\n")
+    name = f"thing-detail-{dt.date.today().isoformat()}.md"
+    _dangling_archive_links(root, "designs/archive", [name])
+    _dangling_archive_links(root, "designs/versions", [name])
+    with pytest.raises(ValueError, match="create_todo/update_todo"):
+        commit.supersede_section("designs/thing.md", "## Detail", "invented reason", assent=True)
+    assert list((root / "todos").iterdir()) == []
