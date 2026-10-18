@@ -129,3 +129,17 @@ def test_atomic_write_never_touches_the_process_umask(tmp_path, monkeypatch):
     storage.atomic_write(tmp_path / "fresh.md", "new")
     assert (tmp_path / "fresh.md").read_text() == "new"
     assert [p.name for p in tmp_path.iterdir()] == ["fresh.md"]
+
+
+def test_root_writer_creates_missing_store_owned_like_the_vault(tmp_path):
+    import os
+    from g_todos.storage import atomic_write, store_lock
+
+    if os.geteuid() != 0:
+        pytest.skip("ownership hand-off only applies to root writers")
+    os.chown(tmp_path, 65534, 65534)
+    store = tmp_path / "tickets" / "nested"
+    with store_lock(store):
+        atomic_write(store / "record.md", "text")
+    for path in (tmp_path / "tickets", store, store / ".lock", store / "record.md"):
+        assert path.stat().st_uid == 65534, path

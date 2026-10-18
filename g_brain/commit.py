@@ -1272,6 +1272,7 @@ def rebuild_indexes() -> dict:
 
 def main() -> None:
     BRAIN_ROOT.mkdir(parents=True, exist_ok=True)
+    _refuse_managed_store(COMMITS_LOG)
     COMMITS_LOG.touch(exist_ok=True)
     mcp.run()
 

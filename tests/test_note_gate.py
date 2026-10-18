@@ -437,3 +437,13 @@ def test_commit_log_cannot_be_redirected_into_todos(corpus):
     with pytest.raises(ValueError, match="create_todo/update_todo"):
         commit.append_commit_log("agent", "create", "hazards/x.md", "", "1.0.0", "invented")
     assert victim.read_bytes() == before
+
+
+def test_server_start_refuses_a_commit_log_link_into_todos(corpus, monkeypatch):
+    root, commit = corpus
+    (root / "todos").mkdir()
+    commit.COMMITS_LOG.symlink_to(root / "todos" / "planted.md")
+    monkeypatch.setattr(commit.mcp, "run", lambda: None)
+    with pytest.raises(ValueError, match="create_todo/update_todo"):
+        commit.main()
+    assert list((root / "todos").iterdir()) == []

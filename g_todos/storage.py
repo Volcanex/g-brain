@@ -12,9 +12,20 @@ def _match_owner(path, directory):
         os.chown(path, stat.st_uid, stat.st_gid)
 
 
+def _ensure_dir(directory):
+    """Create a store directory owned like its parent, so root never claims it."""
+    missing = []
+    while not directory.exists():
+        missing.append(directory)
+        directory = directory.parent
+    for path in reversed(missing):
+        path.mkdir(exist_ok=True)
+        _match_owner(path, path.parent)
+
+
 @contextmanager
 def store_lock(directory):
-    directory.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(directory)
     with (directory / ".lock").open("a") as lock:
         _match_owner(directory / ".lock", directory)
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -25,7 +36,7 @@ def store_lock(directory):
 
 
 def atomic_write(path, text):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(path.parent)
     try:
         mode = path.stat().st_mode & 0o7777
     except FileNotFoundError:
