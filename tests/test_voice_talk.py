@@ -67,3 +67,21 @@ def test_tool_turn_runs_tool_then_speaks(talk, monkeypatch):
     evs = list(talk_mod.stream_turn("probe", "what's due this week?"))
     assert [e["t"] for e in evs] == ["tool", "s", "done"]
     assert evs[-1]["tools"] == ["list_todos"] and evs[-1]["small_talk"] is False
+
+
+def test_rate_limit_answers_without_model(talk, monkeypatch):
+    from voice import talk as talk_mod
+    calls = []
+
+    def fake(messages, use_tools):
+        calls.append(1)
+        yield "text", "Hi."
+        yield "calls", []
+    monkeypatch.setattr(talk_mod, "_stream_model", fake)
+    monkeypatch.setattr(talk_mod, "_RECENT", {})
+    for _ in range(talk_mod.RATE_TURNS):
+        list(talk_mod.stream_turn("rate-probe", "hey there"))
+    evs = list(talk_mod.stream_turn("rate-probe", "hey there"))
+    assert len(calls) == talk_mod.RATE_TURNS
+    assert evs[0]["text"] == talk_mod.SLOW_DOWN
+    assert evs[-1]["limited"] is True

@@ -17,6 +17,7 @@ import datetime
 import json
 import re
 import time
+from collections import deque
 
 import httpx
 
@@ -42,6 +43,26 @@ _ACTION = re.compile(
     r"due|deadline|list|search|find|look up|brain|pulse|todos|open|done|finish|"
     r"move|delete|cancel|change|update|who|where|which|how many|did i|have i|do i)\b",
     re.I)
+
+
+# Spoken turns are capped per session: a reply the page hears through its own
+# speakers can come back as a new turn, and each turn costs model calls.
+MAX_TOKENS = 400
+RATE_TURNS = 6
+RATE_WINDOW = 60.0
+SLOW_DOWN = "Slow down a moment, give me a few seconds before the next one."
+_RECENT: dict[str, deque] = {}
+
+
+def _rate_limited(sender: str, now: float | None = None) -> bool:
+    now = time.time() if now is None else now
+    q = _RECENT.setdefault(sender, deque())
+    while q and now - q[0] > RATE_WINDOW:
+        q.popleft()
+    if len(q) >= RATE_TURNS:
+        return True
+    q.append(now)
+    return False
 
 
 def is_small_talk(text: str) -> bool:
@@ -90,7 +111,8 @@ def _stream_model(messages, use_tools):
     headers = {"Authorization": f"Bearer {config.OPENROUTER_API_KEY}", "X-Title": "brain-voice-talk"}
     if config.PUBLIC_URL:
         headers["HTTP-Referer"] = config.PUBLIC_URL
-    payload = {"model": config.MODEL, "messages": messages, "stream": True}
+    payload = {"model": config.MODEL, "messages": messages, "stream": True,
+               "max_tokens": MAX_TOKENS}
     if use_tools:
         payload["tools"] = agent.TOOLS
         payload["tool_choice"] = "auto"
@@ -130,6 +152,12 @@ def stream_turn(sender: str, text: str):
     {"t":"tool","name":...,"ms":...}, then {"t":"done",...}."""
     t0 = time.time()
     ms = lambda: int((time.time() - t0) * 1000)  # noqa: E731
+
+    if _rate_limited(sender):
+        agent.log.warning("talk sender=%s rate limited, model not called", sender)
+        yield {"t": "s", "text": SLOW_DOWN, "ms": ms()}
+        yield {"t": "done", "ms": ms(), "first_ms": ms(), "small_talk": False, "tools": [], "limited": True}
+        return
 
     if sender not in agent._HISTORY:
         agent._HISTORY[sender] = transcript.load_tail(sender, agent._MAX_TURNS)

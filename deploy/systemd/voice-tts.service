@@ -16,6 +16,10 @@ Nice=5
 CPUQuota=300%
 MemoryHigh=550M
 MemoryMax=700M
+# Reclaim protection: keep the warm model out of swap under host memory pressure.
+MemoryLow=400M
+# phonemizer copies libespeak-ng.so into mkdtemp() dirs; keep them off the host /tmp.
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target
