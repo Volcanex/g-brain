@@ -21,10 +21,10 @@ import urllib.request
 API = os.environ.get("BRAIN_API", "http://127.0.0.1:8766/api")
 
 
-def _call(path, payload=None):
+def _call(path, payload=None, method=None):
     req = urllib.request.Request(
         API + path, data=json.dumps(payload).encode() if payload is not None else None,
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json"}, method=method)
     return json.load(urllib.request.urlopen(req, timeout=30))
 
 
@@ -35,9 +35,10 @@ def apply(plan):
     if any(not str(todo.get("source_id") or "").strip() for todo in todos):
         raise ValueError("Every todo needs source_id from the mail's Message-ID or IMAP UID")
     existing = _call("/todos?status=all")
-    open_titles = {normalize_text(t["title"], one_line=True).casefold()
+    open_titles = {normalize_text(t["title"], one_line=True).casefold(): t
                    for t in existing if t.get("status", "open") == "open"}
-    seen_keys = {t["source_key"] for t in existing if t.get("source_key")}
+    seen_keys = {key for todo in existing
+                 for key in [todo.get("source_key"), *(todo.get("source_keys") or [])] if key}
     ordinals = {}
     made = skipped = 0
     for todo in todos:
@@ -47,7 +48,13 @@ def apply(plan):
         key = f"{source}#{ordinals[source_id]}"
         title = normalize_text(todo["title"], one_line=True)
         normalized = title.casefold()
-        if key in seen_keys or normalized in open_titles:
+        if key in seen_keys:
+            skipped += 1
+            continue
+        if normalized in open_titles:
+            survivor = open_titles[normalized]
+            _call("/todos/" + survivor["slug"], {"source_keys": [key]}, method="PATCH")
+            seen_keys.add(key)
             skipped += 1
             continue
         payload = {k: todo[k] for k in ("priority", "due", "body") if todo.get(k)}
@@ -57,7 +64,7 @@ def apply(plan):
         if "slug" not in result:
             raise RuntimeError(f"todo not created: {title}")
         seen_keys.add(key)
-        open_titles.add(normalized)
+        open_titles[normalized] = result
         if result.get("deduped"):
             skipped += 1
         else:

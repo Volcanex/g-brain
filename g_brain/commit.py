@@ -61,7 +61,6 @@ KIND_DIRS: dict[str, str] = {
     "reference": "references",
     "source":    "sources",
     "log":       "logs",
-    "todo":      "todos",
 }
 CANONICAL_DIRS: set[str] = set(KIND_DIRS.values())
 LAYERS = {"design": "design", "idea": "idea", "about": "fact", "hazard": "hazard"}
@@ -72,6 +71,13 @@ _LAYER_HELP = (
     "Every-run rules belong as g-levels gates. Dated life commitments go to create_todo, "
     "machine or agent work to create_ticket, current state to pulse_note."
 )
+
+
+def _refuse_managed_store(path: Path) -> None:
+    path = path.resolve()
+    for folder, tools in (("todos", "create_todo/update_todo"), ("tickets", "create_ticket")):
+        if path.is_relative_to((BRAIN_ROOT / folder).resolve()):
+            raise ValueError(f"Corpus writes cannot change {folder}/. Use {tools}.")
 
 
 def _validate_target_path(target: str) -> None:
@@ -112,8 +118,9 @@ def _validate_target_path(target: str) -> None:
 def _resolve(target: str) -> Path:
     """Resolve a target path relative to BRAIN_ROOT, refusing escape
     and refusing non-canonical layouts."""
-    _validate_target_path(target)
     p = (BRAIN_ROOT / target).resolve()
+    _refuse_managed_store(p)
+    _validate_target_path(target)
     if BRAIN_ROOT.resolve() not in p.parents and p != BRAIN_ROOT.resolve():
         raise ValueError(f"path escapes brain root: {target}")
     return p
@@ -282,8 +289,9 @@ def propose_commit(summary: str, mode: str = "auto") -> dict:
             "{type, target}. type ∈ {create, edit_minor, edit_patch, "
             "supersede, mark_broken}. "
             "target MUST be '<plural-kind-dir>/<slug>.md', one of: "
-            "designs/, ideas/, about/, hazards/, sources/, logs/, todos/ "
+            "designs/, ideas/, about/, hazards/, sources/, logs/ "
             "(findings/ and references/ for legacy notes). "
+            "Todos and tickets must use create_todo/update_todo or create_ticket. "
             ""
             "FOR create: pass 'body' (full markdown, field name is 'body' "
             "not 'content'); optionally title, kind, frontmatter. Empty body rejected. "
@@ -341,6 +349,10 @@ def execute_commit(plan_id: str, operations: list[dict], actor: str = "agent") -
         return {"error": f"unknown plan_id {plan_id}"}
 
     for op in operations:
+        try:
+            _refuse_managed_store(BRAIN_ROOT / op.get("target", ""))
+        except ValueError as exc:
+            return {"error": str(exc)}
         refusal = _authorise(op, actor)
         if refusal:
             return {"error": refusal}
@@ -495,6 +507,7 @@ def _snapshot_prior(target: Path, before_v: str, post: frontmatter.Post) -> None
     else:
         snap_dir = target.parent / ".history"
         snap_path = snap_dir / f"{target.stem}__v{before_v}.md"
+    _refuse_managed_store(snap_path)
     snap_dir.mkdir(parents=True, exist_ok=True)
     if not snap_path.exists():
         snap_path.write_text(frontmatter.dumps(post) + "\n")
@@ -612,6 +625,7 @@ def _do_supersede(op: dict, actor: str) -> dict:
     old_major = int(before_v.split(".")[0])
 
     versions_dir = target.parent / "versions"
+    _refuse_managed_store(versions_dir)
     versions_dir.mkdir(exist_ok=True)
     archive_path = versions_dir / f"v{old_major}.md"
     if archive_path.exists():
@@ -678,6 +692,7 @@ def supersede_section(note: str, section_heading: str, reason: str,
         archive_dir = target.parent / "versions"
     else:
         archive_dir = target.parent / "archive"
+    _refuse_managed_store(archive_dir)
     archive_dir.mkdir(exist_ok=True)
 
     slug = re.sub(r"[^a-z0-9]+", "-", section_heading.lower()).strip("-")[:60] or "section"
@@ -853,6 +868,7 @@ def _stamp_dependents(note: str, reason: str, actor: str) -> list[dict]:
         if not path.is_file():
             continue
         try:
+            _refuse_managed_store(path)
             post = frontmatter.load(path)
             existing = post.get("stale_dep") or []
             if not isinstance(existing, list):

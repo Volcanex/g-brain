@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 import frontmatter
+from yaml import YAMLError
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from fastmcp import FastMCP
@@ -218,7 +219,7 @@ def _about_block() -> str:
             if sum(len(item) + 1 for item in lines) + len(line) > 1600:
                 break
             lines.append(line)
-        except (OSError, ValueError):
+        except (OSError, ValueError, YAMLError):
             continue
         if len(lines) == 40:
             break

@@ -192,7 +192,7 @@ def test_description_does_not_get_directive_hint(corpus):
 
 
 @pytest.mark.parametrize("folder,kind", [("findings", "finding"), ("references", "reference"),
-    ("sources", "source"), ("logs", "log"), ("todos", "todo"), ("about", "fact"), ("hazards", "hazard")])
+    ("sources", "source"), ("logs", "log"), ("about", "fact"), ("hazards", "hazard")])
 def test_commit_machinery_retains_legacy_and_other_kinds(corpus, folder, kind):
     root, commit = corpus
     plan = commit.propose_commit("Maintain an invented note")
@@ -203,6 +203,71 @@ def test_commit_machinery_retains_legacy_and_other_kinds(corpus, folder, kind):
     edited = commit.execute_commit(plan["plan_id"], [{"type": "edit_minor", "target": f"{folder}/legacy.md",
                                                       "edits": [{"op": "append", "content": "Extra detail."}]}])
     assert edited["results"][0]["ok"]
+
+
+@pytest.mark.parametrize("folder,route", [("todos", "create_todo/update_todo"), ("tickets", "create_ticket")])
+def test_commit_plan_refuses_managed_stores_before_any_write(corpus, folder, route):
+    root, commit = corpus
+    plan = commit.propose_commit("Attempt a boundary bypass")
+    result = commit.execute_commit(plan["plan_id"], [
+        {"type": "create", "target": "hazards/allowed.md", "body": BODY},
+        {"type": "create", "target": f"{folder}/x.md", "body": "Build failed"},
+    ])
+    assert route in result.get("error", "")
+    assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("folder,route", [("todos", "create_todo/update_todo"), ("tickets", "create_ticket")])
+@pytest.mark.parametrize("operation", ["edit_minor", "edit_patch", "edit_major", "supersede", "mark_broken", "move", "delete"])
+def test_corpus_operations_refuse_managed_stores(corpus, folder, route, operation):
+    root, commit = corpus
+    path = seed(root, f"{folder}/current.md", "Stored action", "## Detail\nOriginal wording.")
+    before = path.read_bytes()
+    plan = commit.propose_commit("Attempt to change a managed record")
+    result = commit.execute_commit(plan["plan_id"], [{
+        "type": operation, "target": f"{folder}/current.md", "body": BODY, "assent": True,
+    }])
+    assert route in result.get("error", "")
+    assert path.read_bytes() == before
+    assert sorted(p.relative_to(root).as_posix() for p in root.rglob("*")) == [folder, f"{folder}/current.md"]
+
+
+@pytest.mark.parametrize("folder,route", [("todos", "create_todo/update_todo"), ("tickets", "create_ticket")])
+def test_direct_corpus_writes_refuse_managed_stores(corpus, folder, route):
+    root, commit = corpus
+    path = seed(root, f"{folder}/existing.md", "Stored action", "## Detail\nOriginal wording.")
+    before = path.read_bytes()
+    result = commit.brain_note(BODY, "hazard", target=f"{folder}/existing.md")
+    assert route in result["error"]
+    for write in (
+        lambda: commit.supersede_section(f"{folder}/existing.md", "## Detail", "test", assent=True),
+        lambda: commit.mark_broken(f"{folder}/existing.md", "test"),
+    ):
+        with pytest.raises(ValueError, match=route):
+            write()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("alias", ["hazards/../todos/existing.md", "hazards/link.md"])
+def test_corpus_write_cannot_reach_todos_through_an_alias(corpus, alias):
+    root, commit = corpus
+    path = seed(root, "todos/existing.md", "Stored action")
+    (root / "hazards").mkdir()
+    (root / "hazards/link.md").symlink_to(path)
+    before = path.read_bytes()
+    result = commit.brain_note(BODY, "hazard", target=alias)
+    assert "create_todo/update_todo" in result["error"]
+    assert path.read_bytes() == before
+
+
+def test_dependency_stamping_leaves_managed_stores_unchanged(corpus, monkeypatch):
+    from g_brain import reader
+    root, commit = corpus
+    paths = [seed(root, f"{folder}/linked.md", "Linked action") for folder in ("todos", "tickets")]
+    before = [path.read_bytes() for path in paths]
+    monkeypatch.setattr(reader, "dependents", lambda *a, **k: [{"path": "todos/linked"}, {"path": "tickets/linked"}])
+    assert commit._stamp_dependents("hazards/source.md", "Changed source", "agent") == []
+    assert [path.read_bytes() for path in paths] == before
 
 
 def test_indexes_contain_only_kept_layers_and_clear_empty_master(corpus):

@@ -131,6 +131,25 @@ def test_upsert_uses_boundary(todos):
     assert todos.get("sample").content == "Bring\nID"
 
 
+def test_public_upsert_cannot_disable_policy(todos):
+    with pytest.raises(TypeError, match="policy"):
+        todos.upsert("alert", {"title": "Build failed"}, "", {}, policy=False)
+    assert list(todos.iter_todos()) == []
+
+
+def test_public_upsert_refuses_new_machine_alert(todos):
+    with pytest.raises(ValueError, match="brain_alert"):
+        todos.upsert("alert", {"title": "Build failed"}, "", {})
+    assert list(todos.iter_todos()) == []
+
+
+def test_public_upsert_rechecks_legacy_wording(todos):
+    todos._save("legacy", frontmatter.Post("", title="Build failed", status="open", priority="P1"))
+    with pytest.raises(ValueError, match="brain_alert"):
+        todos.upsert("legacy", {"status": "done"}, "", {})
+    assert todos._update("legacy", {"status": "done"})["status"] == "done"
+
+
 def test_voice_records_owner_and_event(todos):
     from voice import tools
     item = tools.create_todo("Call the clinic", turn_id="fake-turn")
@@ -139,6 +158,47 @@ def test_voice_records_owner_and_event(todos):
     assert other["provenance"]["source"].startswith("voice:")
     with pytest.raises(ValueError, match="brain_alert"):
         tools.create_todo("Fix deploy workflow failure in sample-repo")
+
+
+def test_voice_handle_dispatch_records_call_and_turn(todos, tmp_path, monkeypatch):
+    import json
+    from voice import agent, transcript
+
+    monkeypatch.setattr(agent, "_HISTORY", {})
+    monkeypatch.setattr(transcript, "_TRANSCRIPT_DIR", str(tmp_path / "voice"))
+    monkeypatch.setattr(agent, "build_brief", lambda: "Invented brief")
+    rounds = iter([
+        {"tool_calls": [{"id": "fake-text-call", "function": {
+            "name": "create_todo", "arguments": json.dumps({"title": "Call the clinic"})}}]},
+        {"content": "Saved."},
+    ])
+    monkeypatch.setattr(agent, "_call_model", lambda *a, **k: next(rounds))
+    assert agent.handle("fake-text-session", "Remind me to call the clinic") == "Saved."
+    item, = todos.list_todos()
+    assert item["provenance"] == {
+        "requester": "gabriel", "composer": "agent", "source": "voice:fake-text-call:0"}
+
+
+def test_voice_stream_dispatch_records_call_and_turn(todos, tmp_path, monkeypatch):
+    import json
+    from voice import agent, talk, transcript
+
+    monkeypatch.setattr(agent, "_HISTORY", {})
+    monkeypatch.setattr(transcript, "_TRANSCRIPT_DIR", str(tmp_path / "voice"))
+    monkeypatch.setattr(talk, "_TURN", {})
+    monkeypatch.setattr(talk, "_RECENT", {})
+    monkeypatch.setattr(talk, "build_brief", lambda: "Invented brief")
+    rounds = iter([
+        [("calls", [{"id": "fake-spoken-call", "function": {
+            "name": "create_todo", "arguments": json.dumps({"title": "Call the clinic"})}}])],
+        [("text", "Saved."), ("calls", [])],
+    ])
+    monkeypatch.setattr(talk, "_stream_model", lambda *a, **k: iter(next(rounds)))
+    events = list(talk.stream_turn("fake-spoken-session", "Remind me to call the clinic"))
+    assert events[-1]["t"] == "done"
+    item, = todos.list_todos()
+    assert item["provenance"] == {
+        "requester": "gabriel", "composer": "agent", "source": "voice:fake-spoken-call:1"}
 
 
 def test_expiry_today_and_all_read_surfaces(todos):

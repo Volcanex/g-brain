@@ -109,7 +109,7 @@ def _call_model(messages, use_tools=True):
         return r.json()["choices"][0]["message"]
 
 
-def _run_tool(name, args_json):
+def _run_tool(name, args_json, *, session_id=None, turn_id=None):
     fn = DISPATCH.get(name)
     if fn is None:
         return {"error": f"unknown tool {name}"}
@@ -118,6 +118,8 @@ def _run_tool(name, args_json):
     except json.JSONDecodeError:
         return {"error": "bad tool arguments"}
     try:
+        if name == "create_todo":
+            args.update(session_id=session_id, turn_id=turn_id)
         return fn(**args)
     except Exception as e:  # surface tool errors back to the model, don't crash
         return {"error": f"{type(e).__name__}: {e}"}
@@ -185,7 +187,7 @@ def handle(sender: str, text: str, owner: bool = True, images=None) -> str:
         messages[-1] = {"role": "user", "content": content}
 
     called_any = False
-    for _ in range(config.MAX_TOOL_ITERATIONS):
+    for turn_index in range(config.MAX_TOOL_ITERATIONS):
         msg = _call_model(messages, use_tools=owner)
         messages.append(msg)
         calls = msg.get("tool_calls")
@@ -203,7 +205,7 @@ def handle(sender: str, text: str, owner: bool = True, images=None) -> str:
             called_any = True
             name = call["function"]["name"]
             raw_args = call["function"].get("arguments")
-            result = _run_tool(name, raw_args)
+            result = _run_tool(name, raw_args, session_id=call["id"], turn_id=turn_index)
             # One journal line per tool call. Without this a turn where the
             # model answered "Done." having called nothing is indistinguishable
             # from one that wrote a todo -- which is how a week of missed

@@ -24,6 +24,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel
 
 from g_todos.text import normalize_text, provenance_for
+from g_todos.storage import atomic_write, store_lock
 from g_todos.tickets import create_tickets_router, register_tools
 
 BRAIN_ROOT = Path(os.environ.get("BRAIN_ROOT", Path.home() / "brain")).expanduser()
@@ -399,8 +400,7 @@ def _load(slug: str) -> frontmatter.Post:
 
 def _save(slug: str, post: frontmatter.Post) -> None:
     p = _path_for(slug)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(frontmatter.dumps(post).encode("utf-8") + b"\n")
+    atomic_write(p, frontmatter.dumps(post) + "\n")
 
 
 def _serialize(slug: str, post: frontmatter.Post) -> dict[str, Any]:
@@ -434,6 +434,7 @@ def _serialize(slug: str, post: frontmatter.Post) -> dict[str, Any]:
         "provenance": provenance_for(**{k: (md.get("provenance") or {}).get(k)
                                         for k in ("requester", "composer", "source")}),
         "source_key": md.get("source_key"),
+        "source_keys": list(md.get("source_keys") or []),
     }
     for _k in ("due", "expires"):
         if out[_k] is not None:
@@ -541,34 +542,53 @@ def get(slug):
 def _by_source_key(source_key):
     if source_key:
         for slug, post in iter_todos():
-            if post.metadata.get("source_key") == source_key:
+            if post.get("source_key") == source_key or source_key in (post.get("source_keys") or []):
                 return serialize(slug, post)
     return None
 
 
-def upsert(slug, fields, body, provenance, source_key=None, policy=True):
+def upsert(slug, fields, body, provenance, source_key=None):
     """Write a known todo through the same policy as create.
 
     The same slug/key may be reconciled by its inlet; a key on another slug
     dedupes without writing. Use create for event-style, write-once ingestion.
     """
+    with store_lock(TODOS_DIR):
+        return _upsert(slug, fields, body, provenance, source_key)
+
+
+def _upsert(slug, fields, body, provenance, source_key=None, lifecycle=False):
     _path_for(slug)
     existing = _by_source_key(source_key)
     if existing and existing["slug"] != slug:
         return {**existing, "deduped": True}
     try:
         post = get(slug)
+        unchanged = (fields.get("title", post.get("title")) == post.get("title")
+                     and body == post.content)
     except FileNotFoundError:
+        unchanged = False
         post = frontmatter.Post("", kind="todo", permalink=f"brain/todos/{slug}",
                                 status="open", priority="P2", created=today())
     for key, value in fields.items():
         if key in ("kind", "permalink", "created", "provenance", "source_key"):
             continue
+        if key == "source_keys":
+            keys = list(post.get("source_keys") or [])
+            for extra in value or []:
+                other = _by_source_key(extra)
+                if other and other["slug"] != slug:
+                    raise ValueError("source_key already belongs to another todo")
+                if extra not in keys:
+                    keys.append(extra)
+            post["source_keys"] = keys
+            continue
         if value is None:
             post.metadata.pop(key, None)
         else:
             post[key] = value
-    title, body, provenance = _prepare(post.get("title"), body, provenance, policy)
+    title, body, provenance = _prepare(post.get("title"), body, provenance,
+                                      policy=not (lifecycle and unchanged))
     post.metadata.setdefault("priority", "P2")
     post.metadata.setdefault("status", "open")
     if post.get("priority") not in VALID_PRIORITIES:
@@ -607,6 +627,15 @@ def create(
     source_key: str | None = None,
 ) -> dict[str, Any]:
     """Create an owner action, recording origin and deduping all statuses."""
+    with store_lock(TODOS_DIR):
+        return _create(title, priority, due, relates_to, body, summary, category, remind_min,
+                       reminders, vital, urgent, start, end, all_day, rrule, location, expires,
+                       requester, composer, source, source_key)
+
+
+def _create(title, priority, due, relates_to, body, summary, category, remind_min,
+            reminders, vital, urgent, start, end, all_day, rrule, location, expires,
+            requester, composer, source, source_key):
     existing = _by_source_key(source_key)
     if existing:
         return {**existing, "deduped": True}
@@ -619,13 +648,17 @@ def create(
                   vital=vital, urgent=urgent, start=start, end=end, all_day=all_day,
                   rrule=rrule, location=location,
                   expires=expires if expires is not None else _default_expires(priority, due, rrule))
-    return upsert(_allocate_slug(_slugify(title)), fields, body, provenance, source_key)
+    return _upsert(_allocate_slug(_slugify(title)), fields, body, provenance, source_key)
 
 
 def _update(slug: str, fields: dict[str, Any]) -> dict[str, Any]:
+    with store_lock(TODOS_DIR):
+        return _update_locked(slug, fields)
+
+
+def _update_locked(slug, fields):
     post = _load(slug)
     original_keys = set(post.metadata)
-    original_title = post.metadata.get("title")
     fields = fields.copy()
     body = fields.pop("body", None)
 
@@ -726,10 +759,9 @@ def _update(slug: str, fields: dict[str, Any]) -> dict[str, Any]:
     # Status changes, ticks and reschedules on a stored todo never re-judge it:
     # a legacy item must stay closable. A changed title or body is new wording
     # and goes back through the owner-action check.
-    reworded = body is not None or fields.get("title", original_title) != original_title
     updated = {key: post.metadata.get(key) for key in original_keys | set(post.metadata)}
-    return upsert(slug, updated, post.content, post.get("provenance"), post.get("source_key"),
-                  policy=reworded)
+    return _upsert(slug, updated, post.content, post.get("provenance"), post.get("source_key"),
+                  lifecycle=True)
 
 
 def _mark_done(slug: str) -> dict[str, Any]:
@@ -903,6 +935,7 @@ class _TodoPatch(BaseModel):
     unfailed_date: str | None = None
     postpone_days: int | None = None
     reschedule_to: str | None = None
+    source_keys: list[str] | None = None
 
     model_config = {"extra": "allow"}
 

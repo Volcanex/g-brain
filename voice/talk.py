@@ -230,7 +230,7 @@ def stream_turn(sender: str, text: str):
             yield {"t": "tool", "name": name, "ms": ms()}
             args = call["function"].get("arguments")
             gate = _commit_gate(sender, args, text) if name == "execute_commit" else None
-            result = gate or agent._run_tool(name, args)
+            result = gate or agent._run_tool(name, args, session_id=call["id"], turn_id=_TURN[sender])
             if name == "propose_commit" and isinstance(result, dict) and result.get("plan_id"):
                 _PROPOSED.setdefault(sender, {})[result["plan_id"]] = _TURN[sender]
             elif name == "execute_commit" and gate is None:

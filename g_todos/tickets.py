@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from g_todos.text import normalize_text, provenance_for
+from g_todos.storage import atomic_write, store_lock
 
 TICKETS_DIR = Path(os.environ.get("BRAIN_ROOT", Path.home() / "brain")).expanduser() / "tickets"
 VALID_STATUSES = {"open", "done", "dropped"}
@@ -34,8 +35,7 @@ def _iter():
 
 
 def _save(slug, post):
-    TICKETS_DIR.mkdir(parents=True, exist_ok=True)
-    _path(slug).write_text(frontmatter.dumps(post) + "\n")
+    atomic_write(_path(slug), frontmatter.dumps(post) + "\n")
 
 
 def _paragraph(body):
@@ -49,6 +49,11 @@ def create_ticket(title: str, body: str | None = None, project: str | None = Non
                   requester: str = "agent", composer: str = "agent", source: str = "mcp",
                   source_key: str | None = None) -> dict:
     """Record machine or agent work without adding to the owner's todo list."""
+    with store_lock(TICKETS_DIR):
+        return _create_ticket(title, body, project, requester, composer, source, source_key)
+
+
+def _create_ticket(title, body, project, requester, composer, source, source_key):
     if source_key:
         for slug, post in _iter():
             if post.get("source_key") == source_key:
@@ -83,6 +88,11 @@ def list_tickets(status: str = "open", project: str | None = None) -> list[dict]
 
 def close_ticket(slug: str, status: str = "done", note: str | None = None) -> dict:
     """Close a ticket as done or dropped, retaining its origin and history."""
+    with store_lock(TICKETS_DIR):
+        return _close_ticket(slug, status, note)
+
+
+def _close_ticket(slug, status, note):
     if status not in {"done", "dropped"}:
         raise ValueError("closed status must be done or dropped")
     post = frontmatter.load(_path(slug))

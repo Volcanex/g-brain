@@ -63,7 +63,7 @@ def test_tool_turn_runs_tool_then_speaks(talk, monkeypatch):
         [("text", "You have two things due."), ("calls", [])],
     ])
     monkeypatch.setattr(talk_mod, "_stream_model", lambda m, use_tools: iter(next(rounds)))
-    monkeypatch.setattr(agent, "_run_tool", lambda name, args: {"todos": []})
+    monkeypatch.setattr(agent, "_run_tool", lambda name, args, **context: {"todos": []})
     evs = list(talk_mod.stream_turn("probe", "what's due this week?"))
     assert [e["t"] for e in evs] == ["tool", "s", "done"]
     assert evs[-1]["tools"] == ["list_todos"] and evs[-1]["small_talk"] is False
@@ -128,7 +128,7 @@ def test_execute_commit_needs_proposal_then_fresh_yes(talk, monkeypatch):
     monkeypatch.setattr(talk_mod, "_TURN", {})
     ran = []
 
-    def run(name, args):
+    def run(name, args, **context):
         ran.append(name)
         return {"plan_id": "p1"} if name == "propose_commit" else {"ok": True}
     monkeypatch.setattr(agent, "_run_tool", run)

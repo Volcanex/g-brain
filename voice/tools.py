@@ -59,7 +59,10 @@ def create_todo(title, priority="P2", due=None, body=None, relates_to=None, cate
                 start=None, end=None, all_day=None, rrule=None, location=None,
                 session_id=None, turn_id=None):
     """Record an owner request with an originating voice event id."""
-    event_id = turn_id or session_id or str(uuid4())
+    if session_id is not None and turn_id is not None:
+        event_id = f"{session_id}:{turn_id}"
+    else:
+        event_id = turn_id or session_id or str(uuid4())
     return brain_todos.create_todo(title=title, priority=priority, due=due,
                                    requester="gabriel", composer="agent", source=f"voice:{event_id}",
                                    relates_to=relates_to, body=body, category=category, remind_min=remind_min,

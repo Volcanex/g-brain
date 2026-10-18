@@ -42,3 +42,6 @@ checked by `tests/test_boundaries.py`.
   a bar by supplying a session-transcript bar. Ambiguous legacy kinds are skipped.
 - `create_api()` mounts todos, tickets and pulse routers. The host mounts `brain_todos.mcp`,
   which registers ticket tools from `g_todos.tickets` as well as owner commitments.
+- Corpus writes refuse `todos/` and `tickets/`, including resolved path aliases.
+  Use `create_todo/update_todo` or `create_ticket` for those stores. Commit plans
+  check every target before writing any operation.

@@ -26,9 +26,11 @@ def applier(tmp_path, monkeypatch):
     client = TestClient(app)
     posts = []
 
-    def call(path, payload=None):
+    def call(path, payload=None, method=None):
         if payload is None:
             response = client.get(path)
+        elif method == "PATCH":
+            response = client.patch(path, json=payload)
         else:
             posts.append(payload)
             response = client.post(path, json=payload)
@@ -70,6 +72,25 @@ def test_same_batch_normalized_duplicate_creates_one(applier):
                       {"title": "Pay water bill", "priority": "P1", "source_id": "fake-5"}]}
     assert gmail_apply.apply(plan) == (1, 1)
     assert len(posts) == 1 and len(todos.list_todos()) == 1
+
+
+@pytest.mark.parametrize("already_exists", [False, True])
+def test_title_duplicate_completion_and_identical_retry_create_nothing(applier, already_exists):
+    gmail_apply, todos, posts, acked = applier
+    if already_exists:
+        todos.create("Pay water bill", "P1", source_key="original:fake")
+    plan = {"todos": [
+        {"title": "Pay water bill", "priority": "P1", "source_id": "duplicate-fake-1"},
+        {"title": "pay water bill", "priority": "P1", "source_id": "duplicate-fake-2"},
+    ]}
+    assert gmail_apply.apply(plan) == ((0, 2) if already_exists else (1, 1))
+    survivor, = todos.list_todos()
+    todos.mark_done(survivor["slug"])
+    assert gmail_apply.apply(plan) == (0, 2)
+    assert len(todos.list_todos(status="all")) == 1
+    assert len(acked) == 2
+    for source_id in ("duplicate-fake-1", "duplicate-fake-2"):
+        assert todos.create("Retry with new wording", source_key=f"gmail:{source_id}#1")["deduped"]
 
 
 def test_two_todos_from_one_message_survive(applier):

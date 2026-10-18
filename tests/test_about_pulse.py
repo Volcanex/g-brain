@@ -57,3 +57,13 @@ def test_about_keeps_room_for_other_payload_sections(pulse):
         (about / f"fact-{n:02}.md").write_text(frontmatter.dumps(frontmatter.Post("", title=f"Fact {n}", kind="fact", summary="a" * 500)))
     assert len(pulse._about_block()) < 1700
     assert "No daily brief yet" in pulse.composed_payload()
+
+
+def test_malformed_about_frontmatter_does_not_break_brief(pulse):
+    about = pulse.BRAIN_ROOT / "about"
+    about.mkdir()
+    (about / "a-broken.md").write_text("---\nkind: fact\nsummary: [unclosed\n---\n")
+    (about / "b-good.md").write_text(frontmatter.dumps(frontmatter.Post(
+        "", title="Good fact", kind="fact", summary="Prefers a morning walk.")))
+    assert "- Good fact: Prefers a morning walk." in pulse.composed_payload()
+    assert "- Good fact: Prefers a morning walk." in pulse.pulse_brief()["body"]
