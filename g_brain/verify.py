@@ -9,7 +9,7 @@ notes standing on ground that shifted.
 **It clears only on explicit dependency-specific review evidence.** A review
 must name the exact stamp being reviewed, record a reason and an attended
 actor. A note's updated date is not evidence of review. Every other flag stays
-in the review queue and, past a threshold, reaches the alert spine.
+in the review queue, with aged flags surfaced to readers.
 
 That restraint is the point. A verifier that decided for itself whether a note
 "still holds" would be rubber-stamping: it would clear everything, look
@@ -27,6 +27,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sys
+from pathlib import Path
+from threading import Lock
 
 import frontmatter
 
@@ -35,8 +37,9 @@ import g_config
 BRAIN_ROOT = g_config.BRAIN_ROOT
 REPORT_PATH = BRAIN_ROOT / "status" / "stale.json"
 
-# A flag older than this has been sitting unreviewed long enough to page.
+# A flag this old is highlighted in the report and session orientation.
 ESCALATE_AFTER_DAYS = 14
+_REPORT_LOCK = Lock()
 
 
 def _today() -> dt.date:
@@ -52,10 +55,10 @@ def _parse_date(value) -> dt.date | None:
         return None
 
 
-def _iter_flagged():
+def _iter_flagged(root: Path):
     """Yield (path, post, flags) for every note carrying stale_dep."""
-    for md in sorted(BRAIN_ROOT.rglob("*.md")):
-        rel = md.relative_to(BRAIN_ROOT)
+    for md in sorted(root.rglob("*.md")):
+        rel = md.relative_to(root)
         if any(p.startswith(".") for p in rel.parts):
             continue
         try:
@@ -67,62 +70,74 @@ def _iter_flagged():
             yield md, post, flags
 
 
-def sweep(apply: bool = True) -> dict:
+def resolve_note(note: str, metadata: dict, today: dt.date) -> dict:
+    """Pure review check for one note; return retained flags and report entries."""
+    flags = metadata.get("stale_dep") or []
+    reviews = metadata.get("dependency_reviews") or []
+    if not isinstance(reviews, list):
+        reviews = []
+    keep = []
+    cleared = []
+    outstanding = []
+    errors = []
+    for flag in flags:
+        if not isinstance(flag, dict):
+            keep.append(flag)
+            errors.append(f"{note}: malformed dependency flag retained")
+            continue
+        dep = str(flag.get("note", ""))
+        since = _parse_date(flag.get("since"))
+        entry = {
+            "note": note,
+            "title": str(metadata.get("title") or note),
+            "depends_on": dep,
+            "since": since.isoformat() if since else None,
+            "reason": str(flag.get("reason", "")),
+            "stamp": str(flag.get("stamp") or flag.get("since") or ""),
+        }
+        review = next((r for r in reviews if isinstance(r, dict)
+                       and r.get("note") == dep
+                       and entry["stamp"] and r.get("stamp") == entry["stamp"]
+                       and r.get("actor") in {"human", "agent"}
+                       and len(str(r.get("reason", "")).strip().split()) >= 4
+                       and r.get("reviewed_at")), None)
+        if review is not None:
+            entry["cleared_because"] = review["reason"]
+            cleared.append(entry)
+            continue
+        age = (today - since).days if since else 0
+        entry["age_days"] = age
+        entry["escalate"] = age >= ESCALATE_AFTER_DAYS
+        outstanding.append(entry)
+        keep.append(flag)
+    return {"keep": keep, "cleared": cleared, "outstanding": outstanding, "errors": errors}
+
+
+def sweep(apply: bool = True, root: Path | None = None) -> dict:
     """Walk every flagged note. Clear what evidence allows, report the rest."""
+    root = BRAIN_ROOT if root is None else root
     cleared: list[dict] = []
     outstanding: list[dict] = []
     errors: list[str] = []
 
-    for md, post, flags in _iter_flagged():
-        rel = md.relative_to(BRAIN_ROOT).as_posix().removesuffix(".md")
-        reviews = post.get("dependency_reviews") or []
-        if not isinstance(reviews, list):
-            reviews = []
-        keep: list[dict] = []
-
-        for flag in flags:
-            if not isinstance(flag, dict):
-                keep.append(flag)
-                errors.append(f"{rel}: malformed dependency flag retained")
-                continue
-            dep = str(flag.get("note", ""))
-            since = _parse_date(flag.get("since"))
-            entry = {
-                "note": rel,
-                "title": str(post.get("title") or rel),
-                "depends_on": dep,
-                "since": since.isoformat() if since else None,
-                "reason": str(flag.get("reason", "")),
-                "stamp": str(flag.get("stamp") or flag.get("since") or ""),
-            }
-
-            # Exact stamp identity, not an unrelated edit or an earlier review.
-            review = next((r for r in reviews if isinstance(r, dict)
-                           and r.get("note") == dep
-                           and entry["stamp"] and r.get("stamp") == entry["stamp"]
-                           and r.get("actor") in {"human", "agent"}
-                           and len(str(r.get("reason", "")).strip().split()) >= 4
-                           and r.get("reviewed_at")), None)
-            if review is not None:
-                entry["cleared_because"] = review["reason"]
-                cleared.append(entry)
-                continue
-
-            age = (_today() - since).days if since else 0
-            entry["age_days"] = age
-            entry["escalate"] = age >= ESCALATE_AFTER_DAYS
-            outstanding.append(entry)
-            keep.append(flag)
-
-        if apply and len(keep) != len(flags):
+    for md, post, flags in _iter_flagged(root):
+        rel = md.relative_to(root).as_posix().removesuffix(".md")
+        result = resolve_note(rel, post.metadata, _today())
+        if apply and result["cleared"]:
             try:
-                if keep:
-                    post["stale_dep"] = keep
+                if result["keep"]:
+                    post["stale_dep"] = result["keep"]
                 else:
                     post.metadata.pop("stale_dep", None)
                 md.write_text(frontmatter.dumps(post) + "\n")
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{rel}: {type(exc).__name__}: {exc}")
+                # A failed write must not advertise flags as cleared.
+                result = resolve_note(rel, {**post.metadata, "stale_dep": flags,
+                                           "dependency_reviews": []}, _today())
+        cleared.extend(result["cleared"])
+        outstanding.extend(result["outstanding"])
+        errors.extend(result["errors"])
 
     total = len(cleared) + len(outstanding)
     report = {
@@ -134,19 +149,21 @@ def sweep(apply: bool = True) -> dict:
         "errors": errors,
         "cleared_detail": cleared,
         "outstanding_detail": outstanding,
+        "oldest_detail": sorted((o for o in outstanding if o["escalate"]),
+                                key=lambda o: (-o["age_days"], o["note"], o["depends_on"]))[:5],
     }
 
     # The rubber-stamp alarm. A verifier whose job is to clear things will,
     # if it ever goes wrong, go wrong by clearing everything and looking
     # healthy. Clearing a whole non-trivial batch is therefore reported as a
     # suspicious outcome rather than a good one.
-    report["suspicious_full_clear"] = total >= 5 and len(outstanding) == 0
+    report["suspicious_full_clear"] = total >= 5 and len(outstanding) == 0 and not errors
 
     return report
 
 
 def _notify(report: dict) -> None:
-    """Page the spine for anything that needs a human. Never for a quiet run."""
+    """Warn on verifier failures or a suspicious batch; age stays in the report."""
     try:
         from brain_alerts import send
     except Exception:  # noqa: BLE001 - the sweep still succeeded
@@ -163,29 +180,22 @@ def _notify(report: dict) -> None:
              "verify this is real and not a broken check",
              dedup_key="brain-verify-full-clear")
 
-    n = report["escalating"]
-    if n:
-        oldest = max(
-            (o for o in report["outstanding_detail"] if o.get("escalate")),
-            key=lambda o: o.get("age_days", 0),
-        )
-        review = g_config.env("BRAIN_REVIEW_URL")
-        send("warn", "brain-verify",
-             f"{n} brain note(s) have stood on moved ground for "
-             f"{ESCALATE_AFTER_DAYS}+ days, oldest: {oldest['note']} "
-             f"(depends on {oldest['depends_on']}, {oldest['age_days']}d)."
-             + (f" Review at {review}" if review else ""),
-             dedup_key="brain-verify-stale")
+
+def read_report(root: Path | None = None) -> dict:
+    """Resolve reviewed flags on demand, serializing concurrent report readers."""
+    with _REPORT_LOCK:
+        report = sweep(root=root)
+        _notify(report)
+        return report
 
 
 def main() -> int:
     dry = "--dry-run" in sys.argv
-    report = sweep(apply=not dry)
+    report = sweep(apply=False) if dry else read_report()
 
     if not dry:
         REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
         REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n")
-        _notify(report)
 
     print(json.dumps({k: v for k, v in report.items()
                       if not k.endswith("_detail")}, indent=2))
