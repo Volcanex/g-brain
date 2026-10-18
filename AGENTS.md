@@ -163,6 +163,11 @@ and index rebuilds. Supply `summary=` for the current whole note when appending.
 Otherwise the old summary is marked for review. `brain_note` only creates or appends.
 Structural writes use `propose_commit` then `execute_commit`.
 
+Proxied `search_notes` defaults to the kept layers (`kind` design, idea, fact and
+hazard) and five compact text results. Explicit scopes override these defaults.
+Use `metadata_filters={}` to search everything. `build_context` has no recency
+cutoff unless one is given.
+
 ## Todos and tickets
 
 Every todo writer uses the boundary in `brain_todos.py`, including REST, MCP, voice
