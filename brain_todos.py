@@ -62,15 +62,22 @@ _MACHINE_ALERT = re.compile(
     r"\b(?:fail(?:ed|ure|ing)?|down|outage|alert)\b|"
     r"\b(?:fail(?:ed|ure|ing)?|down)\b[^\n.!?]{0,60}"
     r"\b(?:CI|workflow|build|deploy(?:ment)?|service|uptime|cron)\b", re.I)
+# Project status and agent work, tuned against the real list: a work verb that
+# opens the title and names engineering work, repository mechanics, or a job
+# handed to an agent. Personal errands that merely start with "Finish" or name
+# a vendor called Claude pass.
 _PROJECT_WORK = re.compile(
-    r"captured from the pulse page|"
-    r"^(?:finish|ship|integrate|implement|refactor|merge)\b|"
-    r"\b(?:branch|commit|pull request|PR|repo(?:sitory)?)\b|"
-    r"\b(?:agent should|Claude|Codex|Sol)\b|"
+    r"^(?:refactor|implement|merge|deploy|debug)\b|"
+    r"^(?:finish|ship|integrate|wire)\b[^\n]*"
+    r"\b(?:integration|renderer|pipeline|feature|release|backlog|tickets?|pass|migration|"
+    r"readiness|rebuild|campaign|suite|probe|fix(?:es)?|regression|gameplay|scraper|"
+    r"dashboard|e2e|tests?|statusline|onboarding)\b|"
+    r"\b(?:git (?:branch|commit|push)|pull request|PR #?\d+|repo(?:sitory)?)\b|"
+    r"\b(?:(?:an |the )?(?:agent|Claude|Codex|Sol) should|(?:ask|have|get|tell) (?:Claude|Codex|Sol|an agent)|subagent)\b|"
     r"\b(?:code changes?|fix(?:ing)? (?:a |the )?bug|auth module)\b", re.I)
 
 
-def _prepare(title, body, provenance):
+def _prepare(title, body, provenance, policy=True):
     title = normalize_text(title, one_line=True)
     body = normalize_text(body)
     provenance = provenance_for(**{k: (provenance or {}).get(k)
@@ -78,6 +85,8 @@ def _prepare(title, body, provenance):
     if not title:
         raise ValueError("title is required")
     text = title + "\n" + body
+    if not policy:
+        return title, body, provenance
     if _MACHINE_ALERT.search(text):
         raise ValueError("Machine alerts belong in the alert spine (brain_alert), or nowhere; not in todos")
     if provenance["requester"] != "gabriel":
@@ -537,7 +546,7 @@ def _by_source_key(source_key):
     return None
 
 
-def upsert(slug, fields, body, provenance, source_key=None):
+def upsert(slug, fields, body, provenance, source_key=None, policy=True):
     """Write a known todo through the same policy as create.
 
     The same slug/key may be reconciled by its inlet; a key on another slug
@@ -559,7 +568,7 @@ def upsert(slug, fields, body, provenance, source_key=None):
             post.metadata.pop(key, None)
         else:
             post[key] = value
-    title, body, provenance = _prepare(post.get("title"), body, provenance)
+    title, body, provenance = _prepare(post.get("title"), body, provenance, policy)
     post.metadata.setdefault("priority", "P2")
     post.metadata.setdefault("status", "open")
     if post.get("priority") not in VALID_PRIORITIES:
@@ -616,6 +625,7 @@ def create(
 def _update(slug: str, fields: dict[str, Any]) -> dict[str, Any]:
     post = _load(slug)
     original_keys = set(post.metadata)
+    original_title = post.metadata.get("title")
     fields = fields.copy()
     body = fields.pop("body", None)
 
@@ -713,8 +723,13 @@ def _update(slug: str, fields: dict[str, Any]) -> dict[str, Any]:
     if body is not None:
         post.content = str(body).rstrip() + "\n"
 
+    # Status changes, ticks and reschedules on a stored todo never re-judge it:
+    # a legacy item must stay closable. A changed title or body is new wording
+    # and goes back through the owner-action check.
+    reworded = body is not None or fields.get("title", original_title) != original_title
     updated = {key: post.metadata.get(key) for key in original_keys | set(post.metadata)}
-    return upsert(slug, updated, post.content, post.get("provenance"), post.get("source_key"))
+    return upsert(slug, updated, post.content, post.get("provenance"), post.get("source_key"),
+                  policy=reworded)
 
 
 def _mark_done(slug: str) -> dict[str, Any]:

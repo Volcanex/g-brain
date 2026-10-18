@@ -184,3 +184,24 @@ def test_legacy_sweep_cannot_write_outside_boundary(todos, monkeypatch, capsys):
     assert todos.main() == 0
     assert json.loads(capsys.readouterr().out)["retired"] == 1
     assert path.read_bytes() == before
+
+
+def test_legacy_todo_stays_closable(todos, tmp_path):
+    # A stored todo with no provenance and a long body predates the boundary;
+    # closing it must not be refused by checks meant for new wording.
+    path = todos._path_for("legacy-long")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("---\ntitle: Sort out the billing account\nkind: todo\n"
+                    "permalink: brain/todos/legacy-long\nstatus: open\npriority: P1\n"
+                    "created: '2026-09-01'\n---\n\n" + "detail " * 200 + "\n")
+    assert todos._update("legacy-long", {"status": "done"})["status"] == "done"
+
+
+@pytest.mark.parametrize("title, body, requester", [
+    ("Finish home setup: energy, broadband, TV", "", "unknown"),
+    ("Birthday trip, 14-20 November", "Captured from the pulse page on 2026-10-01.", "pulse.page.compact"),
+    ("Claude plan £18.00", "Monthly charge.", "inlets.subs"),
+    ("Reply to a client about the PR and brand audit", "", "pulse.gmail.distil"),
+])
+def test_real_shaped_owner_actions_pass(todos, title, body, requester):
+    assert todos.create(title, body=body, requester=requester)["title"]
