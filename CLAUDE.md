@@ -280,8 +280,8 @@ instance chooses. Content only: `g-brain` is the code. It exists
 so Obsidian on the iPad (via Working Copy) can hold a working copy and send
 edits back. Excalidraw drawings land in the vault as ordinary files.
 
-`sync_vault.sh` runs from the instance's `brain-vault-sync.timer`, which
-`deploy/systemd/` has no example of (every 10min, **as the user that owns the
+`sync_vault.sh` runs from `brain-vault-sync.timer`, with example units in
+`deploy/systemd/` (every 10min, **as the user that owns the
 vault**). It commits whatever the MCP has written, rebases onto anything the
 iPad pushed, and pushes. A rebase that conflicts is aborted
 and reported, never resolved by guessing: losing a note to an automated merge

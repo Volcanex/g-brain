@@ -387,3 +387,11 @@ def test_duplicate_cache_observes_same_timestamp_creates(corpus):
         new = seed(root, f"{folder}/fresh.md", "Amber adapter")
         os.utime(new, ns=(stamp, stamp))
     assert len(commit._near_duplicates("Amber adapter", BODY)) == 2
+
+
+def test_extensionless_note_never_suggests_its_md_namesake(corpus):
+    root, commit = corpus
+    seed(root, "hazards/shared", "Amber adapter")
+    seed(root, "hazards/shared.md", "An unrelated cobalt valve history")
+    out = commit.brain_note(BODY, "hazard", title="Amber buffer drain", bar=BAR)
+    assert all(hit["target"] != "hazards/shared.md" for hit in out.get("near_duplicates", []))

@@ -1042,7 +1042,10 @@ def _near_duplicates(title: str, text: str) -> list[dict]:
                 continue
             target = f"{note.path}.md"
             try:
-                if not _resolve(target).is_file():
+                resolved = _resolve(target)
+                # An extensionless note shares its path with a different .md file
+                # at best, so it is never a safe append target.
+                if not resolved.is_file() or resolved.with_suffix("").is_file():
                     continue
             except ValueError:
                 continue

@@ -40,13 +40,22 @@ BLOCKED_TOOLS = {
 }
 
 
+_VAULT_FOLDERS = {
+    "designs", "ideas", "about", "hazards", "findings", "references", "todos",
+    "tickets", "nerves", "indexes", "sources", "logs", "brain",
+}
+
+
 async def _search_notes(**arguments):
     query = arguments.get("query") or ""
     scoped = any(arguments.get(name) is not None for name in (
         "note_types", "entity_types", "metadata_filters", "categories", "tags",
         "status", "project", "project_id",
     ))
-    path_query = "/" in query and len(query.split()) == 1
+    words = query.split()
+    path_query = len(words) == 1 and (
+        words[0].startswith("memory://") or words[0].endswith(".md")
+        or words[0].split("/")[0] in _VAULT_FOLDERS and "/" in words[0])
     tag_query = any(word.lower().startswith("tag:") for word in query.split())
     if not (scoped or path_query or tag_query
             or arguments.get("search_all_projects")

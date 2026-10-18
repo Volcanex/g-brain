@@ -156,3 +156,15 @@ class SearchDefaultsTests(unittest.IsolatedAsyncioTestCase):
         for name in self.surface.BLOCKED_TOOLS:
             with self.subTest(name=name), self.assertRaises(Exception):
                 await self.client.call_tool(name, {})
+
+
+    async def test_slash_terms_stay_scoped_and_vault_paths_do_not(self):
+        scoped = {"kind": {"$in": ["design", "idea", "fact", "hazard"]}}
+        for query in ("CI/CD", "input/output", "TCP/IP"):
+            with self.subTest(query=query):
+                await self.client.call_tool("search_notes", {"query": query})
+                self.assertEqual(self.calls[-1]["metadata_filters"], scoped)
+        for query in ("todos/pay-rent", "findings/x.md", "memory://brain/designs/x"):
+            with self.subTest(query=query):
+                await self.client.call_tool("search_notes", {"query": query})
+                self.assertIsNone(self.calls[-1]["metadata_filters"])
