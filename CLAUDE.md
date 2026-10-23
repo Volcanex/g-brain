@@ -60,7 +60,7 @@ directly, so it gets the alias module, which has no `mcp`. Point it at
 | `g_brain/codex.py` | `search_code` tool: semble semantic+lexical search across the repos mapped into `nerves/` |
 | `g_brain/gmap.py` | Layer 3+4 sync: crawls GitHub → brain/nerves/ and brain/lineage/ |
 | `g_spine/status.py` | Layer 5: probes the manifest's services + the dependency catalog, forwards service `/health` checks, alerts the spine on transitions, writes brain/status/snapshot.json |
-| `g_spine/alerts.py` | The alert spine: `send()`/`brain_alert` → ntfy, dedup/cooldown, the one channel for things that must reach the owner's phone |
+| `g_spine/alerts.py` | The alert spine: `send()`/`brain_alert` → ntfy and the G-Command app push fan-out (`ALERT_PUSH_URL`), dedup/cooldown, the one channel for things that must reach the owner's phone |
 | `g_spine/unit_alert.py` | The `OnFailure=g-alert@%n.service` hook: one alert per failed unit, with its journal tail |
 | `g_brain/miner.py` | Session miner: scans finished Claude transcripts (this host's `~/.claude/projects`, plus one rsync-staged tree per remote host under `MINER_STAGING`, default `~/.cache/brain-miner/`) and runs a headless pass that writes `brain_note`s with `actor=ai-auto`. systemd `brain-miner.timer` runs it every 6h, with its ledger in `.pulse/state/miner-ledger.json`. Runs as **root**. Root's claude login is the one interactive use keeps fresh |
 | `g_brain/capture.py` | What the miner's headless pass calls (`-m brain_capture`) to search and write notes, and to add one line to the pulse page |
@@ -268,6 +268,8 @@ be trusted, while the judgement happens where someone can be asked.
 ## Alerting & dependencies (the spine)
 
 `brain_alerts.py` is the single alert spine: `send(level, source, msg, dedup_key=)` → ntfy, deduped so a stuck failure pings once per cooldown (`clear()` resets on recovery). Callable in-process, as the `brain_alert` MCP tool, and via CLI (`python -m brain_alerts ...`). **No REST route**: the `/api` face is public, so an open push endpoint would be a spam vector. `NTFY_URL` resolves from the live env then the known `.env` files, anchored off the module path (brain-mcp runs as **root**, so `Path.home()` is wrong). The phone must subscribe to the ntfy topic.
+
+`send` also fans out to the G-Command apps: after ntfy it POSTs `{level, source, msg, click}` to `ALERT_PUSH_URL` with `Authorization: Bearer $ALERT_PUSH_TOKEN` (both resolved like `NTFY_URL`; on h they live in this repo's untracked `.env`: `ALERT_PUSH_URL=http://127.0.0.1:8089/api/push`). g-command-web owns the device tokens and APNs; the spine knows only that URL. Each destination fails alone (the fan-out runs after ntfy and never raises), dry-run and the cooldown return before either, and the cooldown still stamps on ntfy success only. Unset `ALERT_PUSH_URL` is a no-op. The token must match g-command-web's `ALERT_PUSH_TOKEN`.
 
 `brain_status.py` probes every manifest service **and** the dependency catalog (`manifest.json → dependencies`), and alerts the spine on state **transitions** (down/warn/recover), deduped, **tiered by `criticality`** (`nice` warns, vital/important down is loud). The morning brief (pulse compactor) also pushes through the spine and is the dead-man's switch: its absence is the signal.
 

@@ -5,6 +5,10 @@ the channel because it is independent of WhatsApp/Telnyx: a transport outage (or
 an unpaid provider) still reaches the phone. WhatsApp can only message inside a
 24h window, so it can never be the "something went down at 3am" channel.
 
+Two destinations: ntfy, and ALERT_PUSH_URL when set (G-Command's /api/push, which sends
+APNs pushes to the paired apps). Each fails alone: the fan-out runs after ntfy and catches
+everything, and dry-run and the cooldown both return before either is touched.
+
 One chokepoint, `send(level, source, msg, dedup_key=...)`, callable three ways:
   * in-process    `import brain_alerts; brain_alerts.send(...)` (crons, outlets,
                   brain_status). This is the primary path.
@@ -44,6 +48,7 @@ def dry_run() -> bool:
 
 
 COOLDOWN_HOURS = 6  # same dedup_key won't re-alert within this window
+PUSH_TIMEOUT = 5  # seconds; the push receiver answers before it calls Apple
 
 # Secret resolution lives in g_config: live env first, then the repo's .env files,
 # anchored on the repo root so it is the same for every user and every unit.
@@ -108,7 +113,9 @@ def clear(dedup_key: str) -> None:
 
 def send(level: str, source: str, msg: str, dedup_key: str | None = None,
          click: str | None = None) -> dict:
-    """Route one alert to ntfy. Returns a small status dict (never raises).
+    """Route one alert to ntfy and to the app push fan-out, each on its own. Returns
+    ntfy's status dict, plus `push` when ALERT_PUSH_URL is set (never raises). The
+    cooldown stamps on ntfy success, as it always has.
 
     level:     critical|error|warn|info|brief (maps to ntfy priority/tags)
     source:    who's alerting, used as the notification title (e.g. "calendar-sync")
@@ -124,6 +131,16 @@ def send(level: str, source: str, msg: str, dedup_key: str | None = None,
         # reached the phone, so the journal can be counted as pages after the fact.
         print(f"[brain-alert] suppressed by cooldown ({dedup_key})", flush=True)
         return {"ok": True, "suppressed": True}
+    result = _ntfy(level, source, msg, click)
+    push = _push(level, source, msg, click)
+    if push is not None:
+        result["push"] = push
+    if dedup_key and result.get("ok"):
+        _stamp(dedup_key)
+    return result
+
+
+def _ntfy(level: str, source: str, msg: str, click: str | None) -> dict:
     priority, tags = _LEVELS.get(level, ("default", ""))
     url = env("NTFY_URL")
     if not url:
@@ -133,14 +150,31 @@ def send(level: str, source: str, msg: str, dedup_key: str | None = None,
         headers["Tags"] = tags
     if click:
         headers["Click"] = click
-    req = urllib.request.Request(url, data=msg.encode("utf-8"), headers=headers)
     try:
+        req = urllib.request.Request(url, data=msg.encode("utf-8"), headers=headers)
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
         print(f"[brain-alert] ntfy push failed: {e}", flush=True)
         return {"ok": False, "error": str(e)}
-    if dedup_key:
-        _stamp(dedup_key)
+    return {"ok": True}
+
+
+def _push(level: str, source: str, msg: str, click: str | None) -> dict | None:
+    """The second destination: POST the alert to ALERT_PUSH_URL (G-Command's /api/push,
+    which sends it to the paired apps over APNs). The spine knows a URL and a bearer
+    token, nothing about devices or Apple. Unset is a no-op (None). Never raises, and
+    runs after ntfy, so a failure here cannot touch ntfy."""
+    url = env("ALERT_PUSH_URL")
+    if not url:
+        return None
+    try:
+        body = json.dumps({"level": level, "source": source, "msg": msg, "click": click or ""}).encode()
+        req = urllib.request.Request(url, data=body, method="POST", headers={
+            "Content-Type": "application/json", "Authorization": f"Bearer {env('ALERT_PUSH_TOKEN')}"})
+        urllib.request.urlopen(req, timeout=PUSH_TIMEOUT)
+    except Exception as e:
+        print(f"[brain-alert] app push failed: {e}", flush=True)
+        return {"ok": False, "error": str(e)}
     return {"ok": True}
 
 
