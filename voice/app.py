@@ -3,6 +3,8 @@
   GET  /webhook  liveness (Telnyx has no GET handshake; returns ok)
   POST /webhook  inbound messages (Ed25519-verified, sender-allowlisted)
   GET  /health   readiness + which creds are still missing
+  POST /chat     text turn; session "app" returns {reply, blocks} (appchat.py)
+  POST /chat/stream  app session turn as NDJSON: delta, tool, done
   POST /talk     spoken turn, NDJSON stream of sentences (localhost, talk page)
   POST /tts      one sentence to WAV via the warm Kokoro service (localhost)
 
@@ -18,9 +20,9 @@ import httpx
 import brain_alerts
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from . import agent, config, talk, whatsapp
+from . import agent, appchat, config, talk, whatsapp
 from .health import deep_health
 
 log = logging.getLogger("voice")
@@ -40,9 +42,41 @@ if not log.handlers:
 app = FastAPI(title="brain voice", docs_url=None, redoc_url=None)
 
 
+class Budget(BaseModel):
+    lines: int = Field(ge=1, le=400)
+    chars_per_line: int = Field(ge=8, le=400)
+
+
+class Image(BaseModel):
+    content_type: str
+    data: str            # base64
+
+
+class File(BaseModel):
+    name: str
+    content_type: str
+    text: str | None = None
+
+
 class ChatIn(BaseModel):
     message: str
     session: str = "web"
+    # The rest is read only for session "app" (appchat.py). g-command-web's
+    # proxy fills it: the budget from the app, images and files from its
+    # upload store, the attachment metadata for history, and a short-lived
+    # read-only grant for agent activity.
+    budget: Budget | None = None
+    images: list[Image] = []
+    files: list[File] = []
+    attachments: list[dict] = []
+    activity: dict | None = None
+
+
+def _app_kwargs(body: ChatIn) -> dict:
+    return dict(budget=body.budget.model_dump() if body.budget else None,
+                images=[i.model_dump() for i in body.images],
+                files=[f.model_dump() for f in body.files],
+                attachments=body.attachments, activity=body.activity)
 
 
 @app.get("/health")
@@ -70,13 +104,36 @@ async def webhook_alive():
 @app.post("/chat")
 async def chat(body: ChatIn):
     """Internal text transport (localhost-only, nginx exposes only /webhook).
-    gcommand calls this server-side behind its admin gate."""
+    gcommand calls this server-side behind its admin gate. The app session gets
+    {reply, blocks}; every other session the plain {reply} it always had."""
+    if body.session == "app":
+        try:
+            return appchat.collect("app", body.message, **_app_kwargs(body))
+        except Exception as e:
+            log.exception("app chat failed")
+            return {"reply": f"(error: {type(e).__name__}: {e})", "blocks": []}
     try:
         reply = agent.handle(body.session, body.message)
     except Exception as e:
         log.exception("chat failed")
         reply = f"(error: {type(e).__name__}: {e})"
     return {"reply": reply}
+
+
+@app.post("/chat/stream")
+def chat_stream(body: ChatIn):
+    """App session turn as NDJSON: {"t":"delta","text"} as the model writes,
+    {"t":"tool","name"} per tool call, then {"t":"done","reply","blocks",...}.
+    On failure the last line is {"t":"error","error"}. Localhost only, like /chat."""
+    def lines():
+        try:
+            for ev in appchat.stream_turn("app", body.message, **_app_kwargs(body)):
+                yield json.dumps(ev) + "\n"
+        except Exception as e:
+            log.exception("app chat stream failed")
+            yield json.dumps({"t": "error", "error": f"{type(e).__name__}: {e}"}) + "\n"
+    return StreamingResponse(lines(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 class TalkIn(BaseModel):

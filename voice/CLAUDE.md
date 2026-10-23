@@ -31,6 +31,31 @@ MCP tools use.
   model, then discarded: only a `[photo]` placeholder lands in history.
   Guests get text-only (media silently dropped).
 
+## App session (the G-Command iPhone and Mac chat)
+`appchat.py`, reached as `/chat` with `session: "app"` (one JSON reply) or
+`/chat/stream` (NDJSON `delta` / `tool` / `done`). g-command-web's
+`pages/voice/api.py` is the only caller and fills the extra fields.
+- Replies are `{reply, blocks}`. Blocks are g-command-web's panel contract
+  (`core/panels/CLAUDE.md`, the one schema web, phone and Mac draw);
+  `blocks.py` drops anything that does not fit it. `show_panel` emits a
+  reference that the proxy expands into the live dash panel. A new block type
+  goes into that spec first, then `blocks.TYPES`.
+- `budget` (`{lines, chars_per_line}`, the app's visible chat area) is a soft
+  guide in the app prompt only. Web, talk and WhatsApp prompts are unchanged.
+- Attachments: the proxy stores uploads in its `var/voice-uploads/` and sends
+  images base64 (the model, deepseek-v4.1-flash, takes image input; check
+  OpenRouter's `input_modalities` before changing `VOICE_MODEL`) and small text
+  files inline. History keeps `[photo]` / `[file: name]` and the upload ids.
+- **Agent activity is READ ONLY, by design.** `agent_activity` reads tmux
+  sessions, pane tails and recent Claude Code session files through
+  g-command-web's `GET /api/sessions/activity`, with a five-minute grant the
+  proxy mints per turn. Voice must never send input to, draft for or drive an
+  agent session: Gabriel does that himself from Workspaces. Do not add a
+  send-keys tool, an input route or a "type this for me" path.
+- The transcript records `blocks` and `attachments` beside `text`;
+  `load_tail` still reads only role and text, so the model never re-reads
+  old block JSON.
+
 ## Files
 - `app.py`: webhook (GET verify / POST inbound) + `/health`; logs one journal
   line per inbound message (sender, text_len, media_count, not the full text)
@@ -48,6 +73,7 @@ MCP tools use.
   Telnyx media URL (Bearer auth for telnyx.com hosts), caps at 5 MB, returns
   `(bytes, content_type)` or None. Telnyx is the BSP.
 - `prompt.py`: identity + the gate rule
+- `appchat.py`, `blocks.py`: the app session and its reply blocks (above)
 - `cli.py`: local tester (`python -m voice.cli`), no WhatsApp needed
 - `config.py`: all env; secrets arrive via `push-secrets` → `voice/.env`
 

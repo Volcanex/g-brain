@@ -136,15 +136,16 @@ def _clean(s: str) -> str:
     return s.strip()
 
 
-def _stream_model(messages, use_tools):
-    """Yield ("text", delta) and finally ("calls", [tool_call, ...])."""
+def _stream_model(messages, use_tools, tools=None, max_tokens=MAX_TOKENS):
+    """Yield ("text", delta) and finally ("calls", [tool_call, ...]). `tools`
+    defaults to agent.TOOLS; the app session (appchat.py) passes its own."""
     headers = {"Authorization": f"Bearer {config.OPENROUTER_API_KEY}", "X-Title": "brain-voice-talk"}
     if config.PUBLIC_URL:
         headers["HTTP-Referer"] = config.PUBLIC_URL
     payload = {"model": config.MODEL, "messages": messages, "stream": True,
-               "max_tokens": MAX_TOKENS}
+               "max_tokens": max_tokens}
     if use_tools:
-        payload["tools"] = agent.TOOLS
+        payload["tools"] = tools or agent.TOOLS
         payload["tool_choice"] = "auto"
     calls: dict[int, dict] = {}
     with httpx.Client(timeout=60) as client:

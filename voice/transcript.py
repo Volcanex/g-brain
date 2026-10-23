@@ -34,15 +34,21 @@ def _path(sender: str) -> str:
     return os.path.join(_TRANSCRIPT_DIR, f"{_safe_name(sender)}.jsonl")
 
 
-def append(sender: str, role: str, text: str) -> None:
-    """Append one event to the sender's transcript file. Never raises."""
+def append(sender: str, role: str, text: str, **extra) -> None:
+    """Append one event to the sender's transcript file. Never raises.
+
+    `extra` keys that are not None ride along on the record: the app session
+    stores a reply's `blocks` and a user turn's upload `attachments`, so its
+    history route can redraw them. load_tail reads only role and text."""
     try:
         _ensure_dir()
-        record = json.dumps({
+        rec = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "role": role,
             "text": text,
-        })
+        }
+        rec.update({k: v for k, v in extra.items() if v is not None})
+        record = json.dumps(rec)
         with open(_path(sender), "a") as fh:
             fh.write(record + "\n")
     except Exception:
