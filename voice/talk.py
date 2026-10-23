@@ -136,13 +136,14 @@ def _clean(s: str) -> str:
     return s.strip()
 
 
-def _stream_model(messages, use_tools, tools=None, max_tokens=MAX_TOKENS):
+def _stream_model(messages, use_tools, tools=None, max_tokens=MAX_TOKENS, model=None):
     """Yield ("text", delta) and finally ("calls", [tool_call, ...]). `tools`
-    defaults to agent.TOOLS; the app session (appchat.py) passes its own."""
+    defaults to agent.TOOLS and `model` to config.MODEL; the app session
+    (appchat.py) passes its own."""
     headers = {"Authorization": f"Bearer {config.OPENROUTER_API_KEY}", "X-Title": "brain-voice-talk"}
     if config.PUBLIC_URL:
         headers["HTTP-Referer"] = config.PUBLIC_URL
-    payload = {"model": config.MODEL, "messages": messages, "stream": True,
+    payload = {"model": model or config.MODEL, "messages": messages, "stream": True,
                "max_tokens": max_tokens}
     if use_tools:
         payload["tools"] = tools or agent.TOOLS

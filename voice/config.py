@@ -28,6 +28,14 @@ OWNER_NAME = g_config.env("VOICE_OWNER_NAME") or "the owner"
 # deepseek also has 18 providers behind it on OpenRouter (mistral-small had 3),
 # which matters because a single degraded provider is how this silently breaks.
 MODEL = os.environ.get("VOICE_MODEL", "deepseek/deepseek-v4.1-flash")
+# App-session turns that carry an image run on this model instead. deepseek
+# lists image input, but on 2026-10-23 most of its OpenRouter providers
+# (DigitalOcean, CoreWeave, InferenceNet, Baidu) silently dropped the image once
+# the real system prompt and history were in the request: a red test square came
+# back "White", or "no image came through". glm-5.3-flash read it 3/3 across
+# three providers with the full prompt, history and tools, and scored 40/40 on
+# the tool loop above.
+VISION_MODEL = os.environ.get("VOICE_VISION_MODEL", "z-ai/glm-5.3-flash")
 
 # --- WhatsApp via Telnyx (Telnyx is the BSP) --------------------------------
 TELNYX_API_KEY = os.environ.get("TELNYX_API_KEY", "")            # Bearer for the API

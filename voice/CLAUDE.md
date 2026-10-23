@@ -43,9 +43,11 @@ MCP tools use.
 - `budget` (`{lines, chars_per_line}`, the app's visible chat area) is a soft
   guide in the app prompt only. Web, talk and WhatsApp prompts are unchanged.
 - Attachments: the proxy stores uploads in its `var/voice-uploads/` and sends
-  images base64 (the model, deepseek-v4.1-flash, takes image input; check
-  OpenRouter's `input_modalities` before changing `VOICE_MODEL`) and small text
-  files inline. History keeps `[photo]` / `[file: name]` and the upload ids.
+  images base64 and small text files inline. A turn with an image runs on
+  `VOICE_VISION_MODEL` (glm-5.3-flash): deepseek lists image input, but most of
+  its OpenRouter providers silently drop the image once the real prompt and
+  history are in the request (measured 2026-10-23, see `config.py`). Re-test
+  with a full-prompt request, not a bare one, before changing either model. History keeps `[photo]` / `[file: name]` and the upload ids.
 - **Agent activity is READ ONLY, by design.** `agent_activity` reads tmux
   sessions, pane tails and recent Claude Code session files through
   g-command-web's `GET /api/sessions/activity`, with a five-minute grant the

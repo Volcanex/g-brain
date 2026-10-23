@@ -38,7 +38,9 @@ APP = """
 ## This chat is the G-Command app
 You are in the owner's G-Command app (iPhone and Mac), not WhatsApp, so the
 WhatsApp formatting notes above do not apply. Your text shows as a chat bubble:
-plain sentences, no markdown (no #, no ** **, no tables, no "-" lists in the text).
+plain sentences, no markdown (no #, no ** **, no tables). Never put a list in the
+text: two or more items go in a bullets or rows block, and the text says what
+matters about them in a sentence.
 
 Under your text the app can draw structured blocks, the same ones its dashboard
 uses. Use them only where they genuinely help, and keep text-only for chat, a
@@ -93,8 +95,8 @@ APP_TOOLS = [
 TOOLS = agent.TOOLS + APP_TOOLS
 
 
-def _stream(messages):
-    return talk._stream_model(messages, True, tools=TOOLS, max_tokens=MAX_TOKENS)
+def _stream(messages, model=None):
+    return talk._stream_model(messages, True, tools=TOOLS, max_tokens=MAX_TOKENS, model=model)
 
 
 def read_activity(activity, host=None, session=None, lines=None):
@@ -163,9 +165,9 @@ def user_content(text, images=None, files=None):
     return parts, history_text
 
 
-def system_prompt(budget=None):
+def system_prompt(budget=None, model=None):
     today = datetime.date.today().isoformat()
-    s = (SYSTEM + date_rule(today) + f"\nYou are currently running on the model: {config.MODEL}\n"
+    s = (SYSTEM + date_rule(today) + f"\nYou are currently running on the model: {model or config.MODEL}\n"
          + "\n## Right now (your short-term memory)\n" + build_brief() + APP)
     if budget and budget.get("lines") and budget.get("chars_per_line"):
         lines, cpl = int(budget["lines"]), int(budget["chars_per_line"])
@@ -186,14 +188,16 @@ def stream_turn(session, text, *, budget=None, images=None, files=None, attachme
     history.append({"role": "user", "content": history_text})
     transcript.append(session, "user", history_text, attachments=attachments or None)
 
-    messages = [{"role": "system", "content": system_prompt(budget)}] + history[-agent._MAX_TURNS:]
+    # A turn with an image runs on the vision model (config.VISION_MODEL says why).
+    model = config.VISION_MODEL if isinstance(content, list) else None
+    messages = [{"role": "system", "content": system_prompt(budget, model)}] + history[-agent._MAX_TURNS:]
     if isinstance(content, list) or content != history_text:
         messages[-1] = {"role": "user", "content": content}
 
     parts, state, used = [], [], []
     for turn_index in range(config.MAX_TOOL_ITERATIONS):
         said, calls = "", []
-        for kind, val in _stream(messages):
+        for kind, val in _stream(messages, model):
             if kind == "text":
                 if not said and parts:
                     yield {"t": "delta", "text": "\n\n"}

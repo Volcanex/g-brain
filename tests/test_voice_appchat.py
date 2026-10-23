@@ -47,7 +47,7 @@ def app_turn(tmp_path, monkeypatch):
 def _rounds(monkeypatch, appchat, rounds, seen=None):
     it = iter(rounds)
 
-    def fake(messages):
+    def fake(messages, model=None):
         if seen is not None:
             seen.append(messages)
         return iter(next(it))
@@ -112,6 +112,8 @@ def test_images_and_files_reach_the_model_not_history(app_turn, monkeypatch):
                              files=[{"name": "n.txt", "content_type": "text/plain", "text": "hello"}],
                              attachments=meta))
     live = seen[0][-1]["content"]
+    from voice import config
+    assert config.VISION_MODEL in seen[0][0]["content"]
     assert live[0]["type"] == "text" and "[file n.txt]\nhello" in live[0]["text"]
     assert live[1]["image_url"]["url"] == "data:image/jpeg;base64,QUJD"
     user = json.loads((tdir / "app.jsonl").read_text().splitlines()[0])
