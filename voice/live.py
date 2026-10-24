@@ -161,8 +161,10 @@ def _todo_digest(todos: list, keep: int = 12) -> dict:
     flat list it read every item out."""
     soon = sorted(todos, key=lambda t: (t.get("due") or "9999", t.get("priority") or "P9"))
     items = [{k: t.get(k) for k in ("slug", "title", "due", "priority", "status")} for t in soon[:keep]]
-    return {"count": len(todos), "say_these": items[:3], "only_if_asked": items[3:],
-            "not_listed": max(0, len(todos) - keep)}
+    today = datetime.datetime.now(ZoneInfo("Europe/London")).date().isoformat()
+    due = sum(1 for t in todos if t.get("due") and t["due"] <= today)
+    return {"open_in_all": len(todos), "due_today_or_overdue": due,
+            "say_these": items[:3], "only_if_asked": items[3:], "not_listed": max(0, len(todos) - keep)}
 
 
 def _plan_id(args) -> str | None:
