@@ -64,6 +64,24 @@ def _fetch_tree(client, repo):
 
 
 SYMLINK_MODE = "120000"
+# The vault is a system repo too, and its nerves/ is this very mirror. Syncing it would
+# copy the mirror into itself one level deeper on every run (nerves/brain/nerves/brain/...),
+# so a repo's nerves/ is never read as nerves.
+MIRROR_DIR = "nerves/"
+
+
+def own_entries(entries):
+    """The tree without anything under a top-level nerves/ mirror."""
+    return [e for e in entries if not e["path"].startswith(MIRROR_DIR)]
+
+
+def prune_empty_dirs(root):
+    """Remove directories left empty once their CLAUDE.md files went, deepest first."""
+    for directory in sorted((p for p in root.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
 
 
 def pair_state(claude, agents):
@@ -121,7 +139,7 @@ def sync_repo(client, repo_url, repo_id):
         print(f"skip ({e.response.status_code})")
         return
 
-    entries = tree_data.get("tree", [])
+    entries = own_entries(tree_data.get("tree", []))
     paths = {e["path"] for e in entries}
     dir_paths = sorted({e["path"] for e in entries if e["type"] == "tree"})
     claude_paths = [e["path"] for e in entries if e["type"] == "blob" and e["path"].endswith("CLAUDE.md")]
@@ -144,6 +162,7 @@ def sync_repo(client, repo_url, repo_id):
         out = nerves_dir / claude_path
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(content)
+    prune_empty_dirs(nerves_dir)
 
     # Write meta (compliance + full dir list for graph)
     top_level_dirs = [d for d in dir_paths if "/" not in d]
