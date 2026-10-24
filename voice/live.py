@@ -155,12 +155,14 @@ def spoken_time(t: datetime.datetime) -> str:
 
 
 def _todo_digest(todos: list, keep: int = 12) -> dict:
-    """What a call needs from list_todos: the count and the soonest few. The full
-    records (56 with bodies on 2026-10-24) were cut at 6000 characters, so the model
-    could neither count them nor afford them."""
+    """What a call needs from list_todos: the count, the three to say and a few more for
+    when he asks. The full records (56 with bodies on 2026-10-24) were cut at 6000
+    characters, so the model could neither count them nor afford them, and given a
+    flat list it read every item out."""
     soon = sorted(todos, key=lambda t: (t.get("due") or "9999", t.get("priority") or "P9"))
     items = [{k: t.get(k) for k in ("slug", "title", "due", "priority", "status")} for t in soon[:keep]]
-    return {"count": len(todos), "soonest": items, "not_shown": max(0, len(todos) - keep)}
+    return {"count": len(todos), "say_these": items[:3], "only_if_asked": items[3:],
+            "not_listed": max(0, len(todos) - keep)}
 
 
 def _plan_id(args) -> str | None:
