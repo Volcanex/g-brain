@@ -52,6 +52,7 @@ STATUS_SNAPSHOT = BRAIN_ROOT / "status" / "snapshot.json"
 
 PAGE_SOFT_CAP = 60          # snippets before pulse_note starts nagging
 PAYLOAD_CHAR_BUDGET = 4000  # ~1k tokens; the payload rides into every session
+FULL_PAGE_BUDGET = 200_000  # pulse_page(full=True): every snippet, still bounded
 
 _PAGE_HEADER = """\
 <!-- pulse page: short-term working memory. One undated snippet per line.
@@ -226,26 +227,58 @@ def _about_block() -> str:
     return "About Gabriel\n" + "\n".join(lines) if lines else ""
 
 
-def composed_payload() -> str:
+def _fit_page(page: str, room: int) -> str:
+    """The page cut to `room` characters at whole snippets, newest kept.
+
+    Snippets are appended at the bottom, so the oldest go first, and the cut says
+    how many went. Before this the whole payload was cut from the end, so a long
+    page silently dropped the dated todos, health and brief age below it."""
+    if len(page) <= room:
+        return page
+    lines = page.splitlines()
+    head = [l for l in lines if not l.lstrip().startswith("- ")]
+    snippets = [l for l in lines if l.lstrip().startswith("- ")]
+    kept: list[str] = []
+    for line in reversed(snippets):
+        dropped = len(snippets) - len(kept) - 1
+        note = f"[{dropped} older snippets not shown: the page needs compaction]"
+        if len("\n".join([note, *kept, line])) > room:
+            break
+        kept.insert(0, line)
+    dropped = len(snippets) - len(kept)
+    if not dropped:
+        return "\n".join(head + kept)
+    note = f"[{dropped} older snippets not shown: the page needs compaction]"
+    return "\n".join([note, *kept])
+
+
+def composed_payload(budget: int = PAYLOAD_CHAR_BUDGET) -> str:
     """The pulse payload that rides into every session: page, near todos,
-    health, brief age. Each section degrades to nothing rather than erroring."""
+    health, brief age. Each section degrades to nothing rather than erroring.
+
+    The page is the one section that grows without bound, so it alone is cut to
+    fit the budget. The dated todos, health and brief age are short and are the
+    sections a session most needs, so they always come through whole."""
     about = _about_block()
-    sections = [about] if about else []
     try:
         page = PAGE_PATH.read_text().strip() if PAGE_PATH.exists() else ""
     except Exception:
         page = ""
-    sections.append(page or "(pulse page is empty, nothing recorded yet)")
+    page = page or "(pulse page is empty, nothing recorded yet)"
+    tail = []
     todos = _todos_soon()
     if todos:
-        sections.append("Dated, next 7 days:\n" + "\n".join(todos))
+        tail.append("Dated, next 7 days:\n" + "\n".join(todos))
     health = _health_line()
     if health:
-        sections.append(health)
-    sections.append(_brief_age_line())
-    text = "\n\n".join(sections).strip() + "\n"
-    if len(text) > PAYLOAD_CHAR_BUDGET:
-        text = text[:PAYLOAD_CHAR_BUDGET].rstrip() + "\n[payload truncated: page needs compaction]\n"
+        tail.append(health)
+    tail.append(_brief_age_line())
+    head = [about] if about else []
+    fixed = len("\n\n".join(head + tail)) + 2 * len("\n\n")
+    page = _fit_page(page, max(budget - fixed, 0))
+    text = "\n\n".join(s for s in head + [page] + tail if s).strip() + "\n"
+    if len(text) > budget:  # the fixed sections alone are over budget
+        text = text[:budget].rstrip() + "\n[payload truncated: page needs compaction]\n"
     return text
 
 
@@ -293,15 +326,16 @@ def pulse_brief() -> dict:
 
 
 @mcp.tool()
-def pulse_page() -> str:
+def pulse_page(full: bool = False) -> str:
     """Return the pulse page: short-term working memory, composed with dated
     todos for the next 7 days, service health, and brief freshness.
 
     This same payload is injected into sessions at start; call this to refresh
-    it mid-session. Routing rule: has a date → todo, true now → pulse,
-    true always → the brain.
+    it mid-session. A page over the payload budget shows its newest snippets
+    and says how many older ones it left out; `full=True` returns every one.
+    Routing rule: has a date → todo, true now → pulse, true always → the brain.
     """
-    return composed_payload()
+    return composed_payload(FULL_PAGE_BUDGET if full else PAYLOAD_CHAR_BUDGET)
 
 
 @mcp.tool()
