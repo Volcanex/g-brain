@@ -237,10 +237,58 @@ def test_disk_pages_once_after_cleaning_and_resets_under_85(watcher):
     assert send.call_args.kwargs == {"dedup_key": "status:disk"}
     status.run()
     status.run()
-    assert len(sudo_calls(command)) == 2
+    calls = sudo_calls(command)
+    assert calls.count(["sudo", "-n", "/usr/local/sbin/g-reflex", "clean-disk"]) == 2
+    # The report ran once in the window. Its stdout here is not a report, so it is
+    # kept as an error rather than retried on every probe.
+    assert calls.count(["sudo", "-n", "/usr/local/sbin/g-reflex", "disk-report"]) == 1
+    assert "disk report unavailable" in json.loads((out / "disk-usage.json").read_text())["error"]
     send.assert_called_once()
     status.run()
     assert "status:disk" not in status.brain_alerts.load_state()
+
+
+def test_disk_report_measures_growth_and_names_it_in_the_page(watcher):
+    status, reflexes, svc, manifest, row, probe, command, send, clock, out = watcher
+    probe.side_effect = lambda *args: row("up")
+    reflexes.shutil.disk_usage.return_value = usage(96)
+    reports = iter([
+        {"/root": 10 * GIB, "/root/.codex": 6 * GIB, "/root/.codex/sessions": 5 * GIB, "/var/log": GIB},
+        {"/root": 13 * GIB, "/root/.codex": 9 * GIB, "/root/.codex/sessions": 8 * GIB, "/var/log": GIB, "/opt/new": 2 * GIB},
+    ])
+
+    def run(cmd, **kw):
+        if cmd[-1] == "disk-report":
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(next(reports)), "")
+        return subprocess.CompletedProcess(cmd, 0, "0", "")
+
+    command.side_effect = run
+    status.brain_alerts.save_state({"status:disk": "earlier"})
+    first = status.run()["disk"]
+    assert "growers" not in first
+    clock[0] += 3600
+    status.run()  # inside the report window: no second du
+    assert sudo_calls(command).count(["sudo", "-n", "/usr/local/sbin/g-reflex", "disk-report"]) == 1
+    clock[0] += reflexes.REPORT_EVERY
+    status.brain_alerts.save_state({})
+    disk = status.run()["disk"]
+    # /root and /root/.codex grew only because sessions did, so sessions alone is named.
+    # /opt/new had no earlier size, so it is not counted as growth.
+    assert disk["growers"] == [{"path": "/root/.codex/sessions", "grew": 3 * GIB, "hours": 7.0}]
+    message = send.call_args.args[2]
+    assert message.endswith("; grew most: /root/.codex/sessions +3.0 GB in 7h")
+    saved = json.loads((out / "disk-usage.json").read_text())
+    # /root keeps its row (4 GB of it is outside .codex); .codex is all sessions, so it goes.
+    assert [r["path"] for r in saved["largest"]] == ["/root", "/root/.codex/sessions", "/opt/new", "/var/log"]
+    assert len(saved["reports"]) == 2 and saved["error"] is None
+
+
+def test_disk_report_skipped_under_the_cleanup_line(watcher):
+    status, reflexes, svc, manifest, row, probe, command, send, clock, out = watcher
+    probe.side_effect = lambda *args: row("up")
+    reflexes.shutil.disk_usage.return_value = usage(60)
+    status.run()
+    assert sudo_calls(command) == [] and not (out / "disk-usage.json").exists()
 
 
 def test_stale_basic_memory_restarts_then_heals_on_next_run(watcher):
@@ -313,7 +361,7 @@ def test_wrapper_starts_only_enabled_services(wrapper, unit):
 
 
 @pytest.mark.parametrize("args", [[], ["stop", "worker"], ["restart", "worker"],
-    ["restart", "basic-memory", "extra"], ["clean-disk", "extra"],
+    ["restart", "basic-memory", "extra"], ["clean-disk", "extra"], ["disk-report", "extra"],
     ["start", "reboot.target"], ["start", "poweroff.target"], ["start", "worker.socket"],
     ["start", "../worker"], ["start", "worker;id"], ["start", "-worker"],
     ["start", "worker", "extra"]])
@@ -407,3 +455,28 @@ def test_wrapper_cleanup_never_follows_symlinks(wrapper, tmp_path, monkeypatch):
     monkeypatch.setattr(module.shutil, "disk_usage", Mock(return_value=usage(50)))
     assert module.main(["clean-disk"]) == 0
     assert pip.exists() and job.exists()
+
+
+def test_wrapper_disk_report_reads_root_fs_trees_and_keeps_big_entries(wrapper, tmp_path, monkeypatch, capsys):
+    module, command = wrapper
+    (tmp_path / "home").mkdir()
+    (tmp_path / "opt").mkdir()
+    (tmp_path / "linked").symlink_to(tmp_path / "home", target_is_directory=True)
+    roots = [tmp_path / "home", tmp_path / "opt", tmp_path / "linked", tmp_path / "absent"]
+    monkeypatch.setattr(module, "REPORT_ROOTS", roots)
+    big, small = 3 * GIB, 5 * 1024 ** 2
+    command.return_value = subprocess.CompletedProcess([], 1, f"{big}\t/home/gabriel\n{small}\t/home/tiny\n", "du: cannot read")
+    assert module.main(["disk-report"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"/home/gabriel": big}
+    du = command.call_args.args[0]
+    same_fs = [str(r) for r in roots[:2] if r.stat().st_dev == os.stat("/").st_dev]
+    assert du == ["du", "-x", "-B1", "--max-depth=3", *same_fs]
+
+
+def test_wrapper_disk_report_keeps_what_du_printed_before_a_timeout(wrapper, monkeypatch, capsys):
+    module, command = wrapper
+    monkeypatch.setattr(module, "REPORT_ROOTS", [])
+    command.side_effect = subprocess.TimeoutExpired(["du"], 240, output=f"{2 * GIB}\t/var/lib/docker\n".encode())
+    assert module.main(["disk-report"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"/var/lib/docker": 2 * GIB} and "partial" in captured.err

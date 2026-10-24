@@ -520,12 +520,18 @@ def run():
     out_dir = BRAIN_ROOT / "status"
     remedies = reflexes.Reflexes(out_dir)
     disk = remedies.clean_disk(shutil.disk_usage("/"))
+    growers = remedies.disk_report(disk)
+    if growers:
+        disk["growers"] = growers[:3]
     remedies.repair_services(results, manifest.get("services", []), hosts, probe, _local, _check_unit)
 
     if disk["used_pct"] >= 90 and "status:disk" not in brain_alerts.load_state():
+        grew = "; grew most: " + ", ".join(
+            f"{g['path']} +{reflexes.size(g['grew'])}" for g in growers[:3]
+        ) + f" in {growers[0]['hours']:g}h" if growers else ""
         brain_alerts.send("error", "disk",
                           f"root disk still {disk['used_pct']:g}% used after cleanup, "
-                          f"{disk['free_gb']:g} GiB free", dedup_key="status:disk")
+                          f"{disk['free_gb']:g} GiB free{grew}", dedup_key="status:disk")
     elif disk["used_pct"] < 85 and not brain_alerts.dry_run():
         brain_alerts.clear("status:disk")
     for r in results:
