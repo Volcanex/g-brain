@@ -295,7 +295,11 @@ class Call:
         self.ep = await asyncio.to_thread(turn.Endpointer, RATE)
 
     async def run(self, greet: bool):
-        if self.sender not in agent._HISTORY:
+        if self.sender == "bench":
+            # Each bench call starts clean, or it copies the last run's times and lists
+            # and two runs no longer measure the same thing.
+            agent._HISTORY[self.sender] = []
+        elif self.sender not in agent._HISTORY:
             agent._HISTORY[self.sender] = await asyncio.to_thread(
                 transcript.load_tail, self.sender, agent._MAX_TURNS)
         self.brief = await asyncio.to_thread(build_brief)

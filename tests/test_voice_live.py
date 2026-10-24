@@ -924,3 +924,17 @@ def test_reminder_with_the_time_follows_old_history(live_env, monkeypatch):
             assert [m["role"] for m in msgs] == ["system", "user", "assistant", "system", "user"]
             assert "out of date" in msgs[3]["content"]
     asyncio.run(run())
+
+
+def test_bench_calls_start_without_old_history(live_env):
+    rounds = [SSE([audio_delta("Hi.")], 0.0002)]
+
+    async def run():
+        from voice import agent
+        agent._HISTORY["bench"] = [{"role": "assistant", "content": "Twenty to midnight."}]
+        async with live_env(rounds, sender="bench") as (live, call, ws, requests, written):
+            await feed(call, ws, turn_end())
+            await remembered(live, call)
+            msgs = [p for p in requests if p.get("stream")][0]["messages"]
+            assert "Twenty to midnight." not in json.dumps(msgs)
+    asyncio.run(run())
