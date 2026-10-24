@@ -109,6 +109,7 @@ def live_env(monkeypatch, tmp_path):
     monkeypatch.setattr(live, "build_brief", lambda: "A test brief.")
     monkeypatch.setattr(live, "FILLER_DIR", str(tmp_path / "fillers"))
     monkeypatch.setattr(live, "GREETINGS", {})
+    monkeypatch.setattr(live, "GOODBYES", ())
     monkeypatch.setattr(live, "_LAST_GREETING", {})
     monkeypatch.setattr(live.config, "LIVE_ENGINE", "openrouter")
     written = []
@@ -998,7 +999,7 @@ def test_ready_greeting_plays_without_a_model_call(live_env, monkeypatch):
         cached = {}
         for line in ("Hey, up late.", "Evening."):
             key = hashlib.sha1(line.encode()).hexdigest()[:12]
-            path = os.path.join(live.FILLER_DIR, "marin", f"greet-{key}.pcm")
+            path = os.path.join(live.FILLER_DIR, "marin", f"line-{key}.pcm")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             cached[line] = line.encode().ljust(480, b"\x00")
             open(path, "wb").write(cached[line])
@@ -1034,7 +1035,7 @@ def test_missing_greetings_are_read_aloud_for_next_time(live_env, monkeypatch):
             await until(lambda: ws.events("metrics"))
             assert ws.events("assistant")[-1]["text"] == "Hello there."
             greeted.set()
-            await until(lambda: os.path.exists(call.greeting_path("Evening.")))
+            await until(lambda: os.path.exists(call.line_path("Evening.")))
             assert call.ready_greeting() == ("Evening.", b"\x05\x00" * 240)
     asyncio.run(run())
 
@@ -1088,4 +1089,21 @@ def test_talking_over_the_goodbye_keeps_the_call(live_env):
             await asyncio.sleep(0.05)
             assert not ws.events("end")
             assert ws.client_state == live.WebSocketState.CONNECTED
+    asyncio.run(run())
+
+
+def test_goodbye_tool_without_words_plays_a_ready_goodbye(live_env, monkeypatch):
+    rounds = [SSE([tool_delta("end_call")], 0.0002)]
+
+    async def run():
+        from voice import live
+        monkeypatch.setattr(live, "GOODBYES", ("Speak soon.",))
+        key = hashlib.sha1(b"Speak soon.").hexdigest()[:12]
+        open(os.path.join(live.FILLER_DIR, "marin", f"line-{key}.pcm"), "wb").write(b"\x07\x00" * 240)
+        async with live_env(rounds, stt="That's all, bye.") as (live, call, ws, requests, written):
+            await feed(call, ws, turn_end())
+            await until(lambda: ws.events("end"))
+            assert [e for e in ws.sent if isinstance(e, bytes)] == [b"\x07\x00" * 240]
+            assert len([p for p in requests if p.get("stream")]) == 1
+            assert ws.events("assistant")[-1]["text"] == "Speak soon."
     asyncio.run(run())

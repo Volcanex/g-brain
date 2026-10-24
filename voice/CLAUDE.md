@@ -102,12 +102,14 @@ Engines (`VOICE_LIVE_ENGINE`, default `openrouter`):
   exactly the line. No filler when the model already said something before
   the tool call ("Let me check").
 - The greeting is not a model call: a line for the hour ("Hey, you're up
-  late.") read once per voice into the same folder (`greet-<hash>.pcm`, see
+  late.") read once per voice into the same folder (`line-<hash>.pcm`, see
   `GREETINGS`), never the same one twice running. Lines not read yet are read
   in the background, and until then the model greets.
 - Saying goodbye ends the call: the model calls `end_call` (offered in every
   session, bench too, since it writes nothing) with its goodbye, the server
-  waits for the client to finish playing it, sends `end` and closes. Talking
+  waits for the client to finish playing it, sends `end` and closes. A bare
+  `end_call` with no words plays a ready goodbye (`GOODBYES`, cached like the
+  greetings) rather than paying a second model call to say "Bye.". Talking
   over the goodbye or starting a new turn keeps the call up.
 - What the model is handed is shaped for speech, because rules in the prompt
   alone did not hold on gpt-audio-mini: the time comes ready-said

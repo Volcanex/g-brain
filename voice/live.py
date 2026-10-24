@@ -63,6 +63,9 @@ GREETINGS = {
     "evening": ("Evening, {owner}.", "Hey, evening.", "Hiya, what's up?"),
     "late": ("Hey, you're up late.", "Hey, {owner}. Still up?", "Hiya. What's keeping you up?"),
 }
+# For a goodbye given as a bare end_call: a second model call only to say "Bye."
+# took most of a second.
+GOODBYES = ("Bye.", "Speak soon.", "See you.")
 END_CALL = {"type": "function", "function": {
     "name": "end_call",
     "description": ("Hang up the call. Only when they say goodbye or that they're done with the "
@@ -368,7 +371,7 @@ class Call:
                 transcript.load_tail, self.sender, agent._MAX_TURNS)
         self.brief = await asyncio.to_thread(build_brief)
         self.spawn(self.load_fillers())
-        self.spawn(self.load_greetings())
+        self.spawn(self.load_lines())
         if greet:
             await self.start(Reply(self.next_id(), self.turn, "greet"))
         else:
@@ -574,7 +577,7 @@ class Call:
             work = [c for c in calls if c["function"]["name"] != "end_call"]
             if len(work) < len(calls):
                 r.hangup = True
-                if said.strip() and not work:
+                if not work and (said.strip() or await self.say_goodbye(r)):
                     return                    # the goodbye is said: hang up once it has played
             if not calls:
                 return
@@ -887,43 +890,57 @@ class Call:
                 out.append(f.read())
         self.fillers = out
 
-    def greeting_path(self, line: str) -> str:
+    def line_path(self, line: str) -> str:
         key = hashlib.sha1(line.encode()).hexdigest()[:12]
-        return os.path.join(FILLER_DIR, self.voice, f"greet-{key}.pcm")
+        return os.path.join(FILLER_DIR, self.voice, f"line-{key}.pcm")
 
     def greeting_lines(self, band: str) -> list[str]:
         return [g.format(owner=config.OWNER_NAME) for g in GREETINGS.get(band, ())]
 
     def ready_greeting(self) -> tuple[str, bytes]:
         band = greeting_band(datetime.datetime.now(ZoneInfo("Europe/London")).hour)
-        ready = [g for g in self.greeting_lines(band) if os.path.exists(self.greeting_path(g))]
+        ready = [g for g in self.greeting_lines(band) if os.path.exists(self.line_path(g))]
         if len(ready) > 1:
             ready = [g for g in ready if g != _LAST_GREETING.get(self.sender)]
         if not ready:
             return "", b""
         line = random.choice(ready)
         _LAST_GREETING[self.sender] = line
-        with open(self.greeting_path(line), "rb") as f:
+        with open(self.line_path(line), "rb") as f:
             return line, f.read()
 
-    async def load_greetings(self):
-        """Read any missing greetings aloud, this hour's first; the model greets until then."""
+    async def say_goodbye(self, r: Reply) -> bool:
+        ready = [g for g in GOODBYES if os.path.exists(self.line_path(g))]
+        if not ready:
+            return False
+        line = random.choice(ready)
+        with open(self.line_path(line), "rb") as f:
+            pcm = f.read()
+        r.text += line
+        await self.send({"type": "assistant", "id": r.id, "text": line, "final": False})
+        await self.speak(r, pcm)
+        return True
+
+    async def load_lines(self):
+        """Read any missing greetings and goodbyes aloud, this hour's greetings first.
+        Until a line is ready the model says it."""
         now = greeting_band(datetime.datetime.now(ZoneInfo("Europe/London")).hour)
-        for band in sorted(GREETINGS, key=lambda b: b != now):
-            for line in self.greeting_lines(band):
-                path = self.greeting_path(line)
-                if os.path.exists(path):
-                    continue
-                try:
-                    pcm = await self.read_aloud(line)
-                except Exception as e:
-                    log.warning("live greeting %r failed: %s", line, e)
-                    continue
-                if pcm:
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    with open(path + ".tmp", "wb") as f:
-                        f.write(pcm)
-                    os.replace(path + ".tmp", path)
+        bands = sorted(GREETINGS, key=lambda b: b != now)
+        lines = [g for b in bands for g in self.greeting_lines(b)] + list(GOODBYES)
+        for line in dict.fromkeys(lines):
+            path = self.line_path(line)
+            if os.path.exists(path):
+                continue
+            try:
+                pcm = await self.read_aloud(line)
+            except Exception as e:
+                log.warning("live line %r failed: %s", line, e)
+                continue
+            if pcm:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path + ".tmp", "wb") as f:
+                    f.write(pcm)
+                os.replace(path + ".tmp", path)
 
     async def read_aloud(self, line: str) -> bytes:
         payload = {"model": config.LIVE_MODEL, "stream": True, "modalities": ["text", "audio"],
