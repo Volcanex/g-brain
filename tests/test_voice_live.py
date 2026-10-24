@@ -940,3 +940,19 @@ def test_bench_calls_start_without_old_history(live_env):
             msgs = [p for p in requests if p.get("stream")][0]["messages"]
             assert "Twenty to midnight." not in json.dumps(msgs)
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("due,said", [
+    ("2026-10-10", "overdue since the 10th of October"),
+    ("2026-10-22", "overdue since Thursday"),
+    ("2026-10-23", "overdue since yesterday"),
+    ("2026-10-24", "due today"),
+    ("2026-10-25", "due tomorrow"),
+    ("2026-10-30", "due on Friday"),
+    ("2026-11-01", "due on the 1st of November"),
+    ("2027-01-12", "due on the 12th of January 2027"),
+    (None, None), ("soon", None)])
+def test_due_dates_are_said_the_british_way(due, said):
+    import datetime
+    from voice import live
+    assert live.spoken_due(due, datetime.date(2026, 10, 24)) == said

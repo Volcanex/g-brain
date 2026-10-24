@@ -159,12 +159,41 @@ def _todo_digest(todos: list, keep: int = 12) -> dict:
     when he asks. The full records (56 with bodies on 2026-10-24) were cut at 6000
     characters, so the model could neither count them nor afford them, and given a
     flat list it read every item out."""
+    today = datetime.datetime.now(ZoneInfo("Europe/London")).date()
     soon = sorted(todos, key=lambda t: (t.get("due") or "9999", t.get("priority") or "P9"))
-    items = [{k: t.get(k) for k in ("slug", "title", "due", "priority", "status")} for t in soon[:keep]]
-    today = datetime.datetime.now(ZoneInfo("Europe/London")).date().isoformat()
-    due = sum(1 for t in todos if t.get("due") and t["due"] <= today)
+    items = [{"slug": t.get("slug"), "title": t.get("title"), "when": spoken_due(t.get("due"), today),
+              "priority": t.get("priority")} for t in soon[:keep]]
+    due = sum(1 for t in todos if t.get("due") and t["due"] <= today.isoformat())
     return {"open_in_all": len(todos), "due_today_or_overdue": due,
             "say_these": items[:3], "only_if_asked": items[3:], "not_listed": max(0, len(todos) - keep)}
+
+
+def spoken_due(due: str | None, today: datetime.date) -> str | None:
+    """"overdue since the 10th of October", "due tomorrow", "due on Friday": read as
+    an ISO date it came out "October 10", American and with no word that it was late."""
+    if not due:
+        return None
+    try:
+        d = datetime.date.fromisoformat(due[:10])
+    except ValueError:
+        return None
+    days = (d - today).days
+    n = d.day
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    date = f"the {n}{suffix} of {d:%B}" + (f" {d.year}" if d.year != today.year else "")
+    if days < -6:
+        return f"overdue since {date}"
+    if days < -1:
+        return f"overdue since {d:%A}"
+    if days == -1:
+        return "overdue since yesterday"
+    if days == 0:
+        return "due today"
+    if days == 1:
+        return "due tomorrow"
+    if days <= 6:
+        return f"due on {d:%A}"
+    return f"due on {date}"
 
 
 def _plan_id(args) -> str | None:
