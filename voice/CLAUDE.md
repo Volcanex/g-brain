@@ -107,7 +107,7 @@ Engines (`VOICE_LIVE_ENGINE`, default `openrouter`):
   in the background, and until then the model greets.
 - Saying goodbye ends the call: the model calls `end_call` (offered in every
   session, bench too, since it writes nothing) with its goodbye, the server
-  waits for the client to finish playing it, sends `end` and closes. A bare
+  waits for the client's done ack for it, sends `end` and closes. A bare
   `end_call` with no words plays a ready goodbye (`GOODBYES`, cached like the
   greetings) rather than paying a second model call to say "Bye.". Talking
   over the goodbye or starting a new turn keeps the call up.
@@ -117,8 +117,10 @@ Engines (`VOICE_LIVE_ENGINE`, default `openrouter`):
   turn repeats it and the stop rule (the shared history holds old calls whose
   times it otherwise copies), and `list_todos` returns a digest
   (`_todo_digest`: totals and three items, due dates as "overdue since the
-  10th of October"; called again in the next turn it gives the next three). Putting the call rules first in the
-  system prompt made it skip the tool and invent todos, so they stay last.
+  10th of October"; called again in the next turn with the same query it
+  gives the next three, and a page counts only once some of the reply after
+  it was heard). Putting the call rules first in the system prompt made it
+  skip the tool and invent todos, so they stay last.
 - `xai` (`grok-voice-latest`, needs `XAI_API_KEY`) and `openai`
   (`gpt-realtime-mini`, needs `OPENAI_API_KEY`): the OpenAI Realtime WebSocket
   protocol, relayed by `realtime.py`. The provider does turn detection and
