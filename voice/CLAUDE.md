@@ -114,8 +114,8 @@ Engines (`VOICE_LIVE_ENGINE`, default `openrouter`):
   (`spoken_time`, "twenty to midnight"), a short system note right before each
   turn repeats it and the stop rule (the shared history holds old calls whose
   times it otherwise copies), and `list_todos` returns a digest
-  (`_todo_digest`: totals, three to say, the rest only if asked, due dates as
-  "overdue since the 10th of October"). Putting the call rules first in the
+  (`_todo_digest`: totals and three items, due dates as "overdue since the
+  10th of October"; called again in the next turn it gives the next three). Putting the call rules first in the
   system prompt made it skip the tool and invent todos, so they stay last.
 - `xai` (`grok-voice-latest`, needs `XAI_API_KEY`) and `openai`
   (`gpt-realtime-mini`, needs `OPENAI_API_KEY`): the OpenAI Realtime WebSocket

@@ -911,12 +911,38 @@ def test_call_gets_todo_count_and_soonest_not_every_record():
     from voice import live
     todos = [{"slug": f"t{i}", "title": f"T{i}", "due": None if i % 2 else f"2099-11-{i + 1:02d}",
               "priority": "P2", "body": "long " * 100} for i in range(20)]
-    digest = live._todo_digest(todos, keep=5)
-    assert digest["open_in_all"] == 20 and digest["not_listed"] == 15
+    digest = live._todo_digest(todos)
+    assert digest["open_in_all"] == 20 and digest["more_after_these"] == 17
     assert digest["due_today_or_overdue"] == 0
     assert [t["slug"] for t in digest["say_these"]] == ["t0", "t2", "t4"]
-    assert [t["slug"] for t in digest["only_if_asked"]] == ["t6", "t8"]
     assert "body" not in digest["say_these"][0]
+    assert [t["slug"] for t in live._todo_digest(todos, 3)["say_these"]] == ["t6", "t8", "t10"]
+    assert live._todo_digest(todos, 18) == {**digest, "say_these": live._todo_digest(todos, 18)["say_these"],
+                                            "more_after_these": 0}
+
+
+def test_asking_again_next_turn_pages_on_and_a_later_ask_starts_over(live_env, monkeypatch):
+    todos = [{"slug": f"t{i}", "title": f"T{i}", "due": f"2099-11-{i + 1:02d}"} for i in range(8)]
+    rounds = []
+    for cid in ("a", "b", "c"):
+        rounds += [SSE([tool_delta("list_todos", cid=cid)], 0.0001), SSE([audio_delta("Right.")], 0.0001)]
+    rounds.insert(4, SSE([audio_delta("Fine.")], 0.0001))
+
+    async def run():
+        async with live_env(rounds) as (live, call, ws, requests, written):
+            monkeypatch.setattr(live.agent, "_run_tool", lambda *a, **kw: list(todos))
+            for _ in range(4):
+                n = len(live.agent._HISTORY["talk"])
+                if call.reply:
+                    ws.control(type="played", id=call.reply.id, ms=20, done=True)
+                    await until(lambda: call.reply.playback_done)
+                await feed(call, ws, turn_end())
+                await until(lambda: len(live.agent._HISTORY["talk"]) >= n + 2 and not call.background)
+            pages = {m["tool_call_id"]: m["content"] for p in requests for m in p.get("messages", [])
+                     if m.get("role") == "tool"}
+            slugs = [[t["slug"] for t in json.loads(pages[c])["say_these"]] for c in ("a", "b", "c")]
+            assert slugs == [["t0", "t1", "t2"], ["t3", "t4", "t5"], ["t0", "t1", "t2"]]
+    asyncio.run(run())
 
 
 def test_reminder_with_the_time_follows_old_history(live_env, monkeypatch):

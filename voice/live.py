@@ -172,18 +172,19 @@ def spoken_time(t: datetime.datetime) -> str:
     return f"{count} {rel} {hour}{when}"
 
 
-def _todo_digest(todos: list, keep: int = 12) -> dict:
-    """What a call needs from list_todos: the count, the three to say and a few more for
-    when he asks. The full records (56 with bodies on 2026-10-24) were cut at 6000
-    characters, so the model could neither count them nor afford them, and given a
-    flat list it read every item out."""
+def _todo_digest(todos: list, start: int = 0) -> dict:
+    """What a call needs from list_todos: the counts and the next three, soonest first.
+    The full records (56 with bodies on 2026-10-24) were cut at 6000 characters, so the
+    model could neither count them nor afford them. Given a flat list it read every
+    item out, and given three to say plus more "only if asked" it still read five, so
+    it gets three at a time and asking again pages on."""
     today = datetime.datetime.now(ZoneInfo("Europe/London")).date()
     soon = sorted(todos, key=lambda t: (t.get("due") or "9999", t.get("priority") or "P9"))
-    items = [{"slug": t.get("slug"), "title": t.get("title"), "when": spoken_due(t.get("due"), today),
-              "priority": t.get("priority")} for t in soon[:keep]]
+    page = [{"slug": t.get("slug"), "title": t.get("title"), "when": spoken_due(t.get("due"), today),
+             "priority": t.get("priority")} for t in soon[start:start + 3]]
     due = sum(1 for t in todos if t.get("due") and t["due"] <= today.isoformat())
-    return {"open_in_all": len(todos), "due_today_or_overdue": due,
-            "say_these": items[:3], "only_if_asked": items[3:], "not_listed": max(0, len(todos) - keep)}
+    return {"open_in_all": len(todos), "due_today_or_overdue": due, "say_these": page,
+            "more_after_these": max(0, len(todos) - start - len(page))}
 
 
 def spoken_due(due: str | None, today: datetime.date) -> str | None:
@@ -310,6 +311,7 @@ class Call:
         self.state = ""
         self.brief = ""
         self.fillers: list[bytes] = []
+        self.todo_at = (0, 0)               # turn and next item of the last list_todos
         self.cost = 0.0
         self.replies = 0
         self.started = time.time()
@@ -701,7 +703,11 @@ class Call:
         result = gate or await asyncio.to_thread(
             agent._run_tool, name, args, session_id=call_id, turn_id=r.turn)
         if name == "list_todos" and isinstance(result, list):
-            result = _todo_digest(result)
+            # Asked again in the next turn ("what else?"), it pages on.
+            turn, start = self.todo_at
+            start = start if r.turn - turn <= 1 and start < len(result) else 0
+            result = _todo_digest(result, start)
+            self.todo_at = (r.turn, start + len(result["say_these"]))
         if name == "propose_commit" and isinstance(result, dict) and result.get("plan_id"):
             talk._PROPOSED.setdefault(self.sender, {})[result["plan_id"]] = r.gturn
         err = result.get("error") if isinstance(result, dict) else None
