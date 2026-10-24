@@ -19,10 +19,13 @@ def test_clean_strips_quotes_links_and_signature_chain():
 def applier(tmp_path, monkeypatch):
     import brain_todos
     import brain_pulse
+    from g_todos import tickets
     from inlets import gmail_apply, gmail_fetch
     monkeypatch.setattr(brain_todos, "TODOS_DIR", tmp_path / "todos")
+    monkeypatch.setattr(tickets, "TICKETS_DIR", tmp_path / "tickets")
     app = FastAPI()
     app.include_router(brain_todos.create_router())
+    app.include_router(tickets.create_tickets_router())
     client = TestClient(app)
     posts = []
 
@@ -34,6 +37,8 @@ def applier(tmp_path, monkeypatch):
         else:
             posts.append(payload)
             response = client.post(path, json=payload)
+        if response.status_code == 400:  # what the real _call raises for a 400
+            raise gmail_apply.Refused(response.json()["detail"])
         response.raise_for_status()
         return response.json()
 
@@ -42,6 +47,14 @@ def applier(tmp_path, monkeypatch):
     acked = []
     monkeypatch.setattr(gmail_fetch, "main", lambda: acked.append(True))
     return gmail_apply, brain_todos, posts, acked
+
+
+@pytest.fixture
+def snapshots(applier, monkeypatch):
+    import brain_pulse
+    recorded = []
+    monkeypatch.setattr(brain_pulse, "record_state", lambda inlet, state, summary=None: recorded.append(state))
+    return recorded
 
 
 def test_apply_skips_duplicates_creates_provenance_and_acks(applier):
@@ -102,11 +115,70 @@ def test_two_todos_from_one_message_survive(applier):
     assert gmail_apply.apply(plan) == (0, 2)
 
 
-def test_apply_failure_does_not_ack(applier):
+def test_apply_failure_does_not_ack(applier, monkeypatch):
     gmail_apply, todos, posts, acked = applier
-    with pytest.raises(Exception):
-        gmail_apply.apply({"todos": [{"title": "Deploy workflow failure", "priority": "P1", "source_id": "fake-7"}]})
+    real = gmail_apply._call
+
+    def flaky(path, payload=None, method=None):
+        if payload is not None:
+            raise RuntimeError("HTTP 503 from /todos: unavailable")
+        return real(path, payload, method)
+
+    monkeypatch.setattr(gmail_apply, "_call", flaky)
+    with pytest.raises(RuntimeError):
+        gmail_apply.apply({"todos": [{"title": "Pay rent", "priority": "P1", "source_id": "fake-7"}]})
     assert acked == []
+
+
+def test_refused_machine_alert_is_named_and_the_rest_lands_and_acks(applier, snapshots):
+    gmail_apply, todos, posts, acked = applier
+    plan = {"snapshot": "Nothing awaiting a reply.", "todos": [
+        {"title": "Deploy workflow failure", "priority": "P1", "source_id": "fake-10"},
+        {"title": "Pay rent", "priority": "P1", "source_id": "fake-11"}]}
+    assert gmail_apply.apply(plan) == (1, 1)
+    assert acked == [True]
+    assert [t["title"] for t in todos.list_todos()] == ["Pay rent"]
+    assert snapshots[0].startswith("Nothing awaiting a reply.")
+    assert "Not made into todos:\n- Deploy workflow failure: Machine alerts belong" in snapshots[0]
+
+
+def test_refused_project_work_becomes_one_ticket_across_retries(applier, snapshots):
+    from g_todos import tickets
+    gmail_apply, todos, posts, acked = applier
+    plan = {"todos": [{"title": "Refactor the billing export", "priority": "P2", "source_id": "fake-12",
+                       "body": "Asked for in the mail."}]}
+    assert gmail_apply.apply(plan) == (0, 1)
+    assert gmail_apply.apply(plan) == (0, 1)
+    assert todos.list_todos(status="all") == [] and acked == [True, True]
+    ticket, = tickets.list_tickets()
+    assert ticket["title"] == "Refactor the billing export" and ticket["source_key"] == "gmail:fake-12#1"
+    assert ticket["provenance"] == {"requester": "pulse.gmail.distil", "composer": "pulse.gmail.distil",
+                                    "source": "gmail:fake-12"}
+    assert "kept as ticket " + ticket["slug"] in snapshots[0]
+
+
+def test_long_body_is_trimmed_rather_than_refused(applier):
+    gmail_apply, todos, posts, acked = applier
+    plan = {"todos": [{"title": "Book the dentist", "priority": "P1", "source_id": "fake-13", "body": "word " * 400}]}
+    assert gmail_apply.apply(plan) == (1, 0)
+    assert len(todos.list_todos()[0]["body"]) <= gmail_apply.BODY_LIMIT and acked == [True]
+
+
+@pytest.mark.parametrize("code,kind", [(400, "Refused"), (500, "RuntimeError")])
+def test_call_names_the_http_reason(monkeypatch, code, kind):
+    import io
+    import urllib.error
+    from inlets import gmail_apply
+
+    def fail(*a, **k):
+        raise urllib.error.HTTPError("http://fake.invalid/api/todos", code, "Bad", {},
+                                     io.BytesIO(b'{"detail": "Machine alerts belong elsewhere"}'))
+
+    monkeypatch.setattr(gmail_apply.urllib.request, "urlopen", fail)
+    with pytest.raises(Exception) as caught:
+        gmail_apply._call("/todos", {"title": "x"})
+    assert type(caught.value).__name__ == kind
+    assert "Machine alerts belong elsewhere" in str(caught.value)
 
 
 def test_missing_source_id_fails_before_any_write_or_ack(applier, monkeypatch, capsys):
