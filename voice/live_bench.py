@@ -137,11 +137,9 @@ class Bench:
                             raise ValueError("server audio rate must be 24000")
                         self.ready, self.ready_at = ev, now
                     elif kind == "reply":
-                        row = self.pending
-                        if row is None or row["id"] is not None:
+                        row = self.bind(ev["id"])
+                        if row is None:
                             raise ValueError("unexpected reply")
-                        row["id"] = ev["id"]
-                        self.by_id[ev["id"]] = row
                         self.active = row
                         self.pending = None
                     elif kind == "user":
@@ -152,6 +150,8 @@ class Bench:
                             spoken[index - 1]["user_text"] = ev.get("text", "")
                     elif kind in ("reply_done", "assistant", "metrics", "flush"):
                         row = self.by_id.get(ev.get("id"))
+                        if row is None and kind == "assistant":
+                            row = self.bind(ev.get("id"))   # words can come before the audio
                         if row is None:
                             raise ValueError(f"{kind} received for an unknown reply")
                         if kind == "reply_done":
@@ -180,6 +180,15 @@ class Bench:
         except Exception as error:
             self.failure = error
             self.changed.set()
+
+    def bind(self, rid):
+        """The row for reply `rid`, giving the waiting row that id on first sight."""
+        row = self.by_id.get(rid)
+        if row is None and self.pending is not None and self.pending["id"] is None:
+            row = self.pending
+            row["id"] = rid
+            self.by_id[rid] = row
+        return row
 
     def total_cost(self):
         return sum(r["metrics"]["cost"] for r in self.rows if r["metrics"] is not None)
@@ -419,6 +428,8 @@ async def selftest(args):
             audible = rid
             if caption is not None:
                 await ws.send(json.dumps({"type": "user", "text": caption, "turn": turn}))
+            # The real model sometimes sends a reply's first words before its audio.
+            await ws.send(json.dumps({"type": "assistant", "id": rid, "text": "", "final": False}))
             await ws.send(json.dumps({"type": "reply", "id": rid}))
             await ws.send(b"\x01\x00" * int(RATE * duration))
             await ws.send(json.dumps({"type": "assistant", "id": rid, "text": text, "final": True}))

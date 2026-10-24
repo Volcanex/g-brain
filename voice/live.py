@@ -37,6 +37,7 @@ from .prompt import SYSTEM, date_rule
 log = logging.getLogger("voice.live")
 
 RATE = 24000
+GENERATION_URL = "https://openrouter.ai/api/v1/generation"
 BYTES_PER_MS = RATE * 2 // 1000
 SESSIONS = ("talk", "app", "bench")
 # live_bench.py calls as "bench": its own history and transcript, and only tools
@@ -161,6 +162,10 @@ class Reply:
         self.tools: list[str] = []
         self.cost = 0.0
         self.ttfa_ms: int | None = None
+        self.eos_ms: int | None = None
+        self.metrics_sent = False
+        self.gen: str | None = None                # OpenRouter generation id of the latest request
+        self.charged = False
         self.gturn = 0                             # talk._TURN when it started, binds commit approval
         self.confirmed = False                     # this turn's "yes" already ran a plan
         self.prev: Reply | None = None             # remembered before this one, in order
@@ -456,7 +461,17 @@ class Call:
                                 or t["function"]["name"] in READ_TOOLS]
             payload["tool_choice"] = "auto"
         t_req = time.time()
+        try:
+            return await self._stream(r, payload, t_req)
+        except asyncio.CancelledError:
+            # Cut off before the usage chunk: ask OpenRouter what it cost instead.
+            if r.gen and not r.charged:
+                self.spawn(self.charge_late(r, r.gen))
+            raise
+
+    async def _stream(self, r: Reply, payload: dict, t_req: float):
         said, calls = "", {}
+        r.gen, r.charged = None, False
         async with self.http.stream("POST", config.OPENROUTER_URL, headers=_headers(), json=payload) as resp:
             if resp.status_code != 200:
                 body = (await resp.aread())[:300]
@@ -473,8 +488,10 @@ class Call:
                     continue
                 if chunk.get("error"):
                     raise RuntimeError(f"OpenRouter: {chunk['error']}")
+                r.gen = r.gen or chunk.get("id")
                 if chunk.get("usage"):
                     self.charge(r, chunk["usage"])
+                    r.charged = True
                 for ch in chunk.get("choices") or []:
                     d = ch.get("delta") or {}
                     a = d.get("audio") or {}
@@ -572,14 +589,13 @@ class Call:
             await self.send({"type": "reply_done", "id": r.id})
         if r.started or r.text:
             await self.send({"type": "assistant", "id": r.id, "text": r.text, "final": True})
-        eos_ms = int((r.first_audio_at - r.eos_at) * 1000) if r.started and r.kind != "greet" else None
+        r.eos_ms = eos_ms = int((r.first_audio_at - r.eos_at) * 1000) if r.started and r.kind != "greet" else None
         if r.stt:
             try:
                 await asyncio.wait_for(asyncio.shield(r.stt), STT_WAIT_S)
             except Exception:
                 pass
-        await self.send({"type": "metrics", "id": r.id, "eos_ms": eos_ms, "ttfa_ms": r.ttfa_ms,
-                         "cost": round(r.cost, 6)})
+        await self.send_metrics(r)
         log.info("live reply sender=%s id=%d kind=%s eos_ms=%s ttfa_ms=%s audio_ms=%d cut=%s tools=%s cost=$%.5f",
                  self.sender, r.id, r.kind, eos_ms, r.ttfa_ms, r.audio_ms, r.cut,
                  ",".join(r.tools) or "-", r.cost)
@@ -599,6 +615,28 @@ class Call:
             except TimeoutError:
                 pass
         await self.remember(r)
+
+    async def send_metrics(self, r: Reply):
+        r.metrics_sent = True
+        await self.send({"type": "metrics", "id": r.id, "eos_ms": r.eos_ms, "ttfa_ms": r.ttfa_ms,
+                         "cost": round(r.cost, 6)})
+
+    async def charge_late(self, r: Reply, gen: str):
+        """OpenRouter bills a cancelled stream for what it generated; its stats appear a
+        moment later. A second metrics event carries the corrected cost."""
+        for delay in (1, 2, 3):
+            await asyncio.sleep(delay)
+            try:
+                resp = await self.http.get(GENERATION_URL, params={"id": gen}, headers=_headers())
+                cost = (resp.json().get("data") or {}).get("total_cost") if resp.status_code == 200 else None
+            except Exception:
+                cost = None
+            if cost is not None:
+                self.charge(r, {"cost": cost})
+                if r.metrics_sent:
+                    await self.send_metrics(r)
+                return
+        log.warning("live cost unknown for cut reply %s", gen)
 
     async def remember(self, r: Reply):
         if r.kind == "greet":
@@ -844,4 +882,7 @@ async def serve(ws: WebSocket):
             pass
     finally:
         if ws.client_state == WebSocketState.CONNECTED:
-            await ws.close()
+            try:
+                await ws.close()
+            except (RuntimeError, WebSocketDisconnect):
+                pass                          # the client went first
