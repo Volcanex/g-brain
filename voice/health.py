@@ -16,7 +16,9 @@ from . import config
 # sync that is never going to happen again. A health check pointed at a dead
 # dependency is worse than no check, because it teaches you to ignore the red.
 _OUTLET_STATE = os.path.join(g_config.STATE_DIR, "reminders.json")
-TELNYX_MIN_BALANCE = 2.0   # USD, warn before WhatsApp sends start failing
+# USD. Below this the check fails and the dependency reads down. The earlier warn is the
+# manifest's telnyx probe `min`, which the status watcher applies to the balance below.
+TELNYX_MIN_BALANCE = 2.0
 OUTLET_MAX_AGE = 1800      # seconds, outlet-remind.timer runs every 5 min
 
 
