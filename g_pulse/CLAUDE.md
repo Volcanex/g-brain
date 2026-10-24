@@ -11,7 +11,10 @@ dated owner commitments go to todos and machine work goes to tickets.
   (`python -m brain_pulse page`, `note`, `record`, `inlets`).
 - The composed brief includes a block of `kind: fact` summaries from `about/`, with up
   to 40 entries and 1,600 characters of entries. The payload has a 4,000 character budget.
-  Tickets stay out of the brief's owner commitments.
+  Only the page is cut to fit it, at whole snippets with the newest kept and a count of
+  the older ones left out, so the dated todos, health and brief age always come through.
+  `pulse_page(full=True)` returns every snippet. Tickets stay out of the brief's owner
+  commitments.
 - `inlets/` at the repo root belongs to this component. Inlets bring outside data in
   (Gmail, recurring charges) and never write the other way.
 - `pulse` at the repo root is the shell wrapper: `pulse inlets`, `pulse show <id>`,
