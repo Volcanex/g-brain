@@ -491,7 +491,14 @@ class Call:
             if not calls:
                 return
             messages.append({"role": "assistant", "content": said or None, "tool_calls": calls})
-            await self.play_filler(r)
+            if said.strip():
+                # It already said "let me check" itself, so no filler, and the answer
+                # that follows needs a space before it in the caption.
+                if not r.text.endswith(" "):
+                    r.text += " "
+                    await self.send({"type": "assistant", "id": r.id, "text": " ", "final": False})
+            else:
+                await self.play_filler(r)
             for call in calls:
                 messages.append(await self.run_tool(r, call))
         await self.send({"type": "error", "message": "Got stuck on that one."})

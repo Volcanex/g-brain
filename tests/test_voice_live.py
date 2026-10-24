@@ -296,6 +296,24 @@ def test_tool_loop_plays_filler_once_and_joins_tool_fragments(live_env, monkeypa
     asyncio.run(run())
 
 
+def test_no_filler_when_the_model_says_it_is_checking(live_env, monkeypatch):
+    first = b"\x03\x00" * 480
+    rounds = [SSE([audio_delta("Let me check.", first), tool_delta("list_todos")], 0.0002),
+              SSE([audio_delta("Nothing due.")], 0.0003)]
+
+    async def run():
+        async with live_env(rounds) as (live, call, ws, requests, written):
+            monkeypatch.setattr(live.agent, "_run_tool", lambda *a, **kw: [])
+            await feed(call, ws, turn_end())
+            await remembered(live, call)
+            frames = [e for e in ws.sent if isinstance(e, bytes)]
+            assert frames == [first, b"\x01\x00" * 480]
+            words = [e["text"] for e in ws.events("assistant") if not e["final"]]
+            assert "".join(words) == "Let me check. Nothing due."
+            assert [e for e in ws.events("assistant") if e["final"]][0]["text"] == "Let me check. Nothing due."
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("sender,name,error", [
     ("talk", "execute_commit", "no plan with that id was proposed on this call; call propose_commit first"),
     ("bench", "create_todo", "read-only session"),
