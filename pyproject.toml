@@ -16,6 +16,7 @@ dependencies = [
     "python-frontmatter>=1.1",
     "httpx>=0.27",
     "semble>=0.1",
+    "markdown-it-py>=3",
 ]
 
 [project.optional-dependencies]
