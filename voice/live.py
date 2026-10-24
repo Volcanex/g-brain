@@ -1108,7 +1108,7 @@ async def serve(ws: WebSocket):
     except Exception as e:
         log.exception("live call failed")
         try:
-            await ws.send_text(json.dumps({"type": "error", "message": f"{type(e).__name__}: {e}"}))
+            await ws.send_text(json.dumps({"type": "error", "message": "The call broke on my end. Call again?"}))
         except Exception:
             pass
     finally:
