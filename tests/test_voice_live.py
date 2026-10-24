@@ -472,6 +472,109 @@ def test_bench_reuses_a_recent_run_only(tmp_path, monkeypatch):
     assert live_bench.recent(900) is None
 
 
+@pytest.mark.parametrize("sending,expected,reason,count", [
+    (False, False, "flush", 1), (True, False, "flush", 0),
+    (False, True, "flush", 0), (False, False, "replaced", 1),
+])
+def test_bench_counts_only_unprompted_interruptions(sending, expected, reason, count):
+    from voice import live_bench
+
+    async def run():
+        class Socket:
+            async def send(self, raw):
+                pass
+
+            async def __aiter__(self):
+                yield json.dumps({"type": "reply", "id": 1})
+                yield b"\x01\x00" * 480
+                yield json.dumps({"type": "flush", "id": 1} if reason == "flush"
+                                 else {"type": "reply", "id": 2})
+
+        bench = live_bench.Bench(Socket(), -20)
+        bench.row("question")
+        bench.sending_question = sending
+        if expected:
+            bench.expected_flush = 1
+            bench.interruption = {"onset_at": time.perf_counter()}
+        await bench.receive()
+        assert len(bench.self_interruptions) == count
+        if count:
+            cut = bench.self_interruptions[0]
+            assert cut["id"] == 1 and cut["played_ms"] == 0
+            assert cut["elapsed_ms"] >= 0 and cut["reason"] == reason
+    asyncio.run(run())
+
+
+def test_bench_echo_does_not_change_other_gates():
+    from voice import live_bench
+    report = {"eos_p50_ms": 100, "eos_p90_ms": 200, "flush_ms": 300, "total_cost": 0.002,
+              "per_turn_cost": {"1": 0.002}, "captions_correct": True,
+              "interruption_answered": True, "cut_cost_known": True,
+              "self_interruptions": [{"id": 1, "played_ms": 400}]}
+    for gate in ("latency", "barge-in", "cost", "none"):
+        args = live_bench.parser().parse_args(["--echo", "-20", "--gate", gate])
+        result = dict(report)
+        assert live_bench.evaluate(result, args) == 0
+        assert not result["checks"]["echo"]
+    for flags, expected in (([], 0), (["--echo", "-20"], 1), (["--echo", "-20", "--gate", "echo"], 1)):
+        assert live_bench.evaluate(dict(report), live_bench.parser().parse_args(flags)) == expected
+
+
+def test_bench_echo_mixes_questions_without_overflow_and_filters_highs():
+    from voice import live_bench
+    echo = live_bench.Echo(0)
+    high = struct.pack("<480h", *([10000, -10000] * 240))
+    echo.play(high, 0)
+    mixed = struct.unpack("<480h", echo.mix(bytes(960), 0.06))
+    assert max(abs(v) for v in mixed[32:]) < 5000
+    echo.play(struct.pack("<480h", *([30000] * 480)), 1)
+    mixed = struct.unpack("<480h", echo.mix(struct.pack("<480h", *([30000] * 480)), 1.06))
+    assert min(mixed[32:]) == max(mixed[32:]) == 32767
+
+
+def test_bench_echo_selftest(tmp_path, capsys):
+    from voice import live_bench
+    output = tmp_path / "echo.json"
+    assert live_bench.main(["--selftest", "--echo", "-20", "--turns", "1", "--json", str(output)]) == 0
+    report = json.loads(output.read_text())
+    assert report["selftest"]["echo"]["levels_db"] == [-30, -20]
+    assert report["checks"]["echo"] and report["self_interruptions"] == []
+    assert "-30/-20 dB levels verified" in capsys.readouterr().out
+
+
+def test_bench_does_not_reuse_another_echo_condition(tmp_path, monkeypatch):
+    from voice import live_bench
+    monkeypatch.setattr(live_bench, "LAST", tmp_path / "last.json")
+    live_bench.remember({"echo_db": -30})
+    called = []
+
+    async def run(args):
+        called.append(args.echo)
+        return {"error": "fake stop", "turns": [], "greeting_ms": None, "eos_p50_ms": None,
+                "eos_p90_ms": None, "flush_ms": None, "total_cost": 0,
+                "per_turn_cost": {}, "captions_correct": False, "interruption_answered": False}
+
+    monkeypatch.setattr(live_bench, "run_bench", run)
+    assert live_bench.main(["--echo", "-20", "--reuse", "900"]) == 2
+    assert called == [-20]
+
+
+def test_bench_echo_captions_survive_unscripted_turns():
+    from voice import live_bench
+
+    async def run():
+        class Socket:
+            async def __aiter__(self):
+                yield json.dumps({"type": "user", "turn": 2, "text": "How's it going?"})
+                yield json.dumps({"type": "reply", "id": 3})
+
+        bench = live_bench.Bench(Socket(), -20)
+        row = bench.row("1", live_bench.QUESTIONS[0])
+        await bench.receive()
+        assert row["user_text"] == live_bench.QUESTIONS[0]
+    asyncio.run(run())
+
+
 def test_bench_rejects_non_pcm24k_tts(tmp_path):
     from voice import live_bench
     buf = io.BytesIO()

@@ -1,7 +1,8 @@
-"""Headphones live-call bench. Run --selftest for a local, cost-free protocol check."""
+"""Live-call bench, with optional residual speaker echo. --selftest is cost-free."""
 import argparse
 import asyncio
 import contextlib
+from collections import deque
 import hashlib
 import io
 import json
@@ -77,8 +78,42 @@ def percentile(values, fraction):
     return values[lower] + (values[math.ceil(index)] - values[lower]) * (index - lower)
 
 
+class Echo:
+    """Delayed speaker leakage, with a 3.2 kHz low-pass and quiet room noise."""
+    def __init__(self, db):
+        self.gain = 10 ** (db / 20)
+        self.delay = 0.06
+        self.alpha = 1 - math.exp(-2 * math.pi * 3200 / RATE)
+        self.filtered = 0.0
+        self.pending = deque()
+        self.rng = random.Random(19)
+
+    def play(self, pcm, at):
+        samples = []
+        for value in struct.unpack(f"<{len(pcm) // 2}h", pcm):
+            self.filtered += self.alpha * (value - self.filtered)
+            samples.append(self.filtered * self.gain)
+        self.pending.append((at + self.delay, samples))
+
+    def mix(self, pcm, at):
+        samples = [v + self.rng.randint(-12, 12) for v in struct.unpack(f"<{len(pcm) // 2}h", pcm)]
+        while self.pending:
+            start, echo = self.pending[0]
+            offset = round((start - at) * RATE)
+            if offset >= len(samples):
+                break
+            begin, end = max(0, -offset), min(len(echo), len(samples) - offset)
+            for i in range(begin, end):
+                samples[offset + i] += echo[i]
+            self.pending.popleft()
+            if end < len(echo):
+                self.pending.appendleft((start + end / RATE, echo[end:]))
+                break
+        return struct.pack(f"<{len(samples)}h", *(max(-32768, min(32767, round(v))) for v in samples))
+
+
 class Bench:
-    def __init__(self, ws):
+    def __init__(self, ws, echo_db=None):
         self.ws = ws
         self.changed = asyncio.Event()
         self.mic = asyncio.Queue()
@@ -95,6 +130,11 @@ class Bench:
         self.failure = None
         self.tasks = []
         self.tape = None          # (time, pcm) as sent and as played, for --record
+        self.echo_db = echo_db
+        self.echo = Echo(echo_db) if echo_db is not None else None
+        self.sending_question = False
+        self.self_interruptions = []
+        self.captions = {}
 
     async def control(self, **event):
         await self.ws.send(json.dumps(event))
@@ -131,7 +171,7 @@ class Bench:
                         row["first_audio_at"] = now
                     row["received_bytes"] += len(raw)
                     row["buffer_bytes"] += len(raw)
-                    if self.tape is not None:
+                    if self.tape is not None or self.echo is not None:
                         row["audio"] += raw
                 else:
                     ev = json.loads(raw)
@@ -144,17 +184,29 @@ class Bench:
                         row = self.bind(ev["id"])
                         if row is None:
                             raise ValueError("unexpected reply")
+                        if self.active is not None and not self.active["playback_done"]:
+                            self.interrupted(self.active, now, "replaced")
+                            self.active["buffer_bytes"] = 0
+                            self.active["playback_done"] = True
                         self.active = row
-                        self.pending = None
+                        if row is self.pending:
+                            self.pending = None
                     elif kind == "user":
                         # Captions carry a turn number rather than a reply id.
                         index = ev.get("turn", 0)
-                        spoken = [r for r in self.rows if r["script"]]
-                        if 0 < index <= len(spoken):
-                            spoken[index - 1]["user_text"] = ev.get("text", "")
+                        if self.echo is not None:
+                            # This audio-only call greets at id 1; echo adds turns
+                            # that have no corresponding scripted question.
+                            self.captions[index + 1] = ev.get("text", "")
+                            if index + 1 in self.by_id:
+                                self.by_id[index + 1]["user_text"] = ev.get("text", "")
+                        else:
+                            spoken = [r for r in self.rows if r["script"]]
+                            if 0 < index <= len(spoken):
+                                spoken[index - 1]["user_text"] = ev.get("text", "")
                     elif kind in ("reply_done", "assistant", "metrics", "flush"):
                         row = self.by_id.get(ev.get("id"))
-                        if row is None and kind == "assistant":
+                        if row is None and (kind == "assistant" or self.echo is not None):
                             row = self.bind(ev.get("id"))   # words can come before the audio
                         if row is None:
                             raise ValueError(f"{kind} received for an unknown reply")
@@ -173,6 +225,7 @@ class Bench:
                             if self.total_cost() >= COST_BUDGET:
                                 raise ValueError("call reached the $0.05 budget")
                         else:
+                            self.interrupted(row, now, "flush")
                             row["buffer_bytes"] = 0
                             row["flushed"] = row["playback_done"] = True
                             await self.played(row, done=True)
@@ -193,7 +246,25 @@ class Bench:
             row = self.pending
             row["id"] = rid
             self.by_id[rid] = row
+        if row is None and self.echo is not None:
+            pending = self.pending
+            row = self.row(f"echo-{rid}")
+            self.pending = pending
+            row["id"] = rid
+            self.by_id[rid] = row
+        if row is not None and rid in self.captions:
+            row["user_text"] = self.captions[rid]
         return row
+
+    def interrupted(self, row, now, reason):
+        intentional = (row["id"] == self.expected_flush and self.interruption is not None
+                       and self.interruption["onset_at"] is not None)
+        if not row["playback_done"] and not self.sending_question and not intentional:
+            first = row["first_audio_at"]
+            self.self_interruptions.append({"id": row["id"], "label": row["label"],
+                                            "played_ms": round(row["played_bytes"] / 48, 1),
+                                            "elapsed_ms": round((now - first) * 1000, 1) if first else None,
+                                            "reason": reason})
 
     def total_cost(self):
         return sum(r["metrics"]["cost"] for r in self.rows if r["metrics"] is not None)
@@ -219,12 +290,16 @@ class Bench:
                 frame = frame.ljust(FRAME_BYTES, b"\x00")
                 if self.tape is not None:
                     self.tape.append((time.perf_counter(), frame))
+            self.sending_question = current is not None
+            if self.echo is not None:
+                frame = self.echo.mix(frame, time.perf_counter())
             await self.ws.send(frame)
             if current is not None:
                 offset += FRAME_BYTES
                 if offset >= len(pcm):
                     row["eos_at"] = time.perf_counter()
                     current = None
+                    self.sending_question = False
                     self.changed.set()
                 else:
                     current = row, pcm, offset
@@ -243,9 +318,13 @@ class Bench:
             row = self.active
             if row is not None and not row["playback_done"]:
                 take = min(row["buffer_bytes"], int((now - last) * RATE) * 2)
-                if self.tape is not None and take:
+                if (self.tape is not None or self.echo is not None) and take:
                     start = row["played_bytes"]
-                    self.tape.append((last, bytes(row["audio"][start:start + take])))
+                    pcm = bytes(row["audio"][start:start + take])
+                    if self.tape is not None:
+                        self.tape.append((last, pcm))
+                    if self.echo is not None:
+                        self.echo.play(pcm, last)
                 row["buffer_bytes"] -= take
                 row["played_bytes"] += take
                 if row["reply_done"] and row["buffer_bytes"] == 0:
@@ -289,11 +368,13 @@ class Bench:
                 await self.completed(row, gap)
             count = self.row("count", COUNT)
             await self.speak(count, utterances[-2][1])
-            await self.wait(lambda: count["received_bytes"] >= int(1.5 * RATE * 2))
+            await self.wait(lambda: count["received_bytes"] >= int(1.5 * RATE * 2) or count["playback_done"])
+            already_cut = count["flushed"]
             stop = self.row("interrupt", STOP)
             self.interruption, self.expected_flush = stop, count["id"]
             await self.speak(stop, utterances[-1][1])
-            await self.wait(lambda: self.flush_ms is not None)
+            if not already_cut:
+                await self.wait(lambda: self.flush_ms is not None or count["flushed"])
             await self.completed(stop, gap)
             await self.wait(lambda: count["metrics"] is not None)
             # A cut reply never gets its usage chunk; the server looks its cost up
@@ -302,6 +383,12 @@ class Bench:
                 await self.wait(lambda: count["metrics_events"] >= 2, timeout=25)
             self.cut_cost_known = count["metrics_events"] >= 2
             return self.report()
+        except Exception as error:
+            if self.echo is None:
+                raise
+            report = self.report()
+            report["error"] = str(error) or type(error).__name__
+            return report
         finally:
             for task in self.tasks:
                 task.cancel()
@@ -322,35 +409,41 @@ class Bench:
                           "played_ms": row["played_bytes"] / 48, "flushed": row["flushed"],
                           "caption_correct": caption_matches(row["script"], row["user_text"]) if row["script"] else None})
         eos = [r["eos_ms"] for r in turns if r["eos_ms"] is not None]
-        if not eos:
+        if not eos and self.echo is None:
             raise ValueError("no turn latency measurements")
+        greeting = self.rows[0]["first_audio_at"]
+        stop = next((r for r in turns if r["label"] == "interrupt"), None)
         return {"ready": self.ready, "turns": turns,
-                "greeting_ms": round((self.rows[0]["first_audio_at"] - self.ready_at) * 1000, 1),
-                "eos_p50_ms": round(statistics.median(eos), 1),
-                "eos_p90_ms": round(percentile(eos, 0.9), 1),
-                "flush_ms": round(self.flush_ms, 1), "total_cost": round(self.total_cost(), 6),
-                "per_turn_cost": {r["label"]: r["server"]["cost"] for r in turns},
+                "greeting_ms": round((greeting - self.ready_at) * 1000, 1) if greeting and self.ready_at else None,
+                "eos_p50_ms": round(statistics.median(eos), 1) if eos else None,
+                "eos_p90_ms": round(percentile(eos, 0.9), 1) if eos else None,
+                "flush_ms": round(self.flush_ms, 1) if self.flush_ms is not None else None,
+                "echo_db": self.echo_db, "self_interruptions": self.self_interruptions,
+                "total_cost": round(self.total_cost(), 6),
+                "per_turn_cost": {r["label"]: r["server"]["cost"] for r in turns if r["server"] is not None},
                 "captions_correct": all(r["caption_correct"] for r in turns if r["script"]),
-                "interruption_answered": acknowledges_stop(turns[-1]["reply_text"]),
+                "interruption_answered": acknowledges_stop(stop["reply_text"]) if stop else False,
                 "cut_cost_known": self.cut_cost_known}
 
 
 # Which checks decide the exit code for each g-levels gate (charter "voice").
 GATES = {"latency": ("eos_p50", "eos_p90"), "barge-in": ("flush", "interruption"),
-         "cost": ("turn_cost", "total_cost", "cut_cost"), "none": ()}
+         "cost": ("turn_cost", "total_cost", "cut_cost"), "echo": ("echo",), "none": ()}
 LAST = Path.home() / ".cache" / "voice-live-bench" / "last.json"
 
 
 def evaluate(report, args):
-    costs = list(report["per_turn_cost"].values())
-    checks = {"eos_p50": report["eos_p50_ms"] <= args.max_eos_p50,
-              "eos_p90": report["eos_p90_ms"] <= args.max_eos_p90,
-              "flush": report["flush_ms"] <= args.max_flush_ms,
+    costs = list(report["per_turn_cost"].values()) or [0]
+    checks = {"eos_p50": report["eos_p50_ms"] is not None and report["eos_p50_ms"] <= args.max_eos_p50,
+              "eos_p90": report["eos_p90_ms"] is not None and report["eos_p90_ms"] <= args.max_eos_p90,
+              "flush": report["flush_ms"] is not None and report["flush_ms"] <= args.max_flush_ms,
               "turn_cost": statistics.mean(costs) <= args.max_turn_cost,
               "total_cost": report["total_cost"] < COST_BUDGET,
               "captions": report["captions_correct"],
               "interruption": report["interruption_answered"],
               "cut_cost": report.get("cut_cost_known", False)}
+    if args.echo is not None or args.gate == "echo":
+        checks["echo"] = args.echo is None or not report.get("self_interruptions", [])
     report["checks"] = checks
     report["mean_turn_cost"] = round(statistics.mean(costs), 6)
     deciding = GATES.get(args.gate, tuple(checks))
@@ -379,18 +472,23 @@ def remember(report):
 
 
 def print_report(report):
+    def latency(value):
+        return "-" if value is None else f"{value:.0f}"
     print("turn       client eos  server eos  ttfa     cost       caption")
     for row in report["turns"]:
-        server = row["server"]
-        def latency(value):
-            return "-" if value is None else f"{value:.0f}"
+        server = row["server"] or {}
+        cost = f"${server['cost']:.6f}" if "cost" in server else "unknown"
         caption = "-" if not row["script"] else ("yes" if row["caption_correct"] else "no")
         print(f"{row['label']:<10} {latency(row['eos_ms']):>9} {latency(server.get('eos_ms')):>11} "
-              f"{latency(server.get('ttfa_ms')):>5}  ${server['cost']:.6f}  {caption}")
+              f"{latency(server.get('ttfa_ms')):>5}  {cost:>9}  {caption}")
         print(f"  user: {row['user_text'] or '-'}")
         print(f"  reply: {row['reply_text']}")
-    print(f"greeting {report['greeting_ms']:.0f} ms, eos p50 {report['eos_p50_ms']:.0f} ms, "
-          f"p90 {report['eos_p90_ms']:.0f} ms, flush {report['flush_ms']:.0f} ms")
+    print(f"greeting {latency(report['greeting_ms'])} ms, eos p50 {latency(report['eos_p50_ms'])} ms, "
+          f"p90 {latency(report['eos_p90_ms'])} ms, flush {latency(report['flush_ms'])} ms")
+    print(f"self-interruptions: {len(report.get('self_interruptions', []))} (echo {report.get('echo_db')} dB)")
+    for cut in report.get("self_interruptions", []):
+        print(f"  self-interruption: reply {cut['id']} ({cut['label']}) at {cut['played_ms']:.0f} ms played, "
+              f"{cut['elapsed_ms']} ms elapsed ({cut['reason']})")
     print(f"total ${report['total_cost']:.6f}, mean ${report.get('mean_turn_cost', 0):.6f} a turn, "
           f"captions {'yes' if report['captions_correct'] else 'no'}, "
           f"interruption answered {'yes' if report['interruption_answered'] else 'no'}")
@@ -406,12 +504,14 @@ async def run_bench(args, *, http=None, gap=0.6):
     else:
         utterances = [(text, await render(text, args.cache, http)) for text in texts]
     async with connect(args.url, max_size=None, proxy=None, open_timeout=10) as ws:
-        bench = Bench(ws)
+        bench = Bench(ws, args.echo)
         if getattr(args, "record", None):
             bench.tape = []
-        report = await bench.run(utterances, args.voice, gap)
-    if bench.tape is not None:
-        write_tape(bench.tape, args.record)
+        try:
+            report = await bench.run(utterances, args.voice, gap)
+        finally:
+            if bench.tape:
+                write_tape(bench.tape, args.record)
     return report
 
 
@@ -492,9 +592,9 @@ async def selftest(args):
             assert len(raw) == FRAME_BYTES
             frames.append(time.perf_counter())
             marker = struct.unpack_from("<h", raw)[0]
-            if marker >= 1000:
+            if marker >= 900:
                 if speaking is None:
-                    speaking = unique[marker - 1000]
+                    speaking = texts[turn]
                     if speaking == STOP:
                         await ws.send(json.dumps({"type": "flush", "id": audible}))
                         await ws.send(json.dumps({"type": "metrics", "id": audible,
@@ -526,7 +626,57 @@ async def selftest(args):
     assert any(ev["id"] == count["id"] and ev.get("done") for ev in played)
     assert any(ev.get("done") and ev["id"] == report["turns"][-1]["id"] for ev in played)
     report["selftest"] = {"mic_frames": len(frames), "renders": len(renders), "playback_acks": len(played)}
+    report["selftest"]["echo"] = await echo_selftest()
     return report
+
+
+async def echo_selftest():
+    """Feed a fake reply through receive/playback/mic, plus exact sample checks."""
+    silence = bytes(FRAME_BYTES)
+    source = struct.pack("<480h", *([10000] * 480))
+    for db in (-30, -20):
+        echo = Echo(db)
+        echo.play(source, 1.0)
+        for at in (1.0, 1.02, 1.04):
+            assert max(abs(v) for v in struct.unpack("<480h", echo.mix(silence, at))) <= 12
+        samples = struct.unpack("<480h", echo.mix(silence, 1.06))
+        level = statistics.mean(samples[32:])
+        assert abs(20 * math.log10(level / 10000) - db) < 0.1
+        assert not echo.pending
+        assert max(abs(v) for v in struct.unpack("<480h", echo.mix(silence, 1.08))) <= 12
+
+    class FakeSocket:
+        def __init__(self):
+            self.frames = []
+
+        async def send(self, raw):
+            if isinstance(raw, bytes):
+                self.frames.append((time.perf_counter(), raw))
+
+        async def __aiter__(self):
+            yield json.dumps({"type": "reply", "id": 1})
+            yield source * 10
+            yield json.dumps({"type": "reply_done", "id": 1})
+            await asyncio.Future()
+
+    ws = FakeSocket()
+    bench = Bench(ws, -20)
+    bench.row("fake")
+    tasks = [asyncio.create_task(coro) for coro in (bench.receive(), bench.send_mic(), bench.playback())]
+    try:
+        await asyncio.sleep(0.36)
+        assert bench.failure is None
+        levels = [(at, statistics.mean(struct.unpack("<480h", pcm))) for at, pcm in ws.frames]
+        first = next(at for at, level in levels if level > 100)
+        delay_ms = (first - bench.rows[0]["first_audio_at"]) * 1000
+        assert 50 <= delay_ms <= 110, delay_ms
+        assert any(abs(level - 1000) < 20 for _, level in levels)
+        assert bench.rows[0]["playback_done"]
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return {"delay_ms": round(delay_ms, 1), "levels_db": [-30, -20]}
 
 
 def parser():
@@ -537,6 +687,7 @@ def parser():
     p.add_argument("--cache", default="/tmp/live-bench-cache")
     p.add_argument("--json", type=Path)
     p.add_argument("--record", type=Path, metavar="WAV", help="write the call as heard to a WAV")
+    p.add_argument("--echo", type=float, metavar="DB", help="mix residual speaker echo into the mic (e.g. -25 dB)")
     p.add_argument("--max-eos-p50", type=float, default=1500)
     p.add_argument("--max-eos-p90", type=float, default=2500)
     p.add_argument("--max-flush-ms", type=float, default=800)
@@ -554,11 +705,15 @@ def main(argv=None):
     args = p.parse_args(argv)
     if args.turns < 0:
         p.error("--turns must be nonnegative")
+    if args.echo is not None and (not math.isfinite(args.echo) or args.echo > 0):
+        p.error("--echo must be finite and at most 0 dB")
     if any(not math.isfinite(v) or v < 0 for v in (args.max_eos_p50, args.max_eos_p90,
                                                     args.max_flush_ms, args.max_turn_cost)):
         p.error("thresholds must be finite and nonnegative")
     try:
         report = None if args.selftest else recent(args.reuse)
+        if report is not None and report.get("echo_db") != args.echo:
+            report = None
         if report is not None:
             print(f"bench: reusing the run from {LAST}")
         else:
@@ -566,11 +721,16 @@ def main(argv=None):
             if not args.selftest:
                 remember(report)
         code = evaluate(report, args)
+        if report.get("error"):
+            report["checks"]["completed"], report["passed"] = False, False
+            print(f"bench error: {report['error']}", file=sys.stderr)
+            code = 2
         if args.json:
             args.json.write_text(json.dumps(report, indent=2) + "\n")
         print_report(report)
         if args.selftest:
             print("selftest: continuous mic, cached renders, playback acknowledgements and flush verified")
+            print(f"selftest: echo delay {report['selftest']['echo']['delay_ms']} ms; -30/-20 dB levels verified")
         return code
     except (Exception, KeyboardInterrupt) as error:
         message = str(error) or type(error).__name__
