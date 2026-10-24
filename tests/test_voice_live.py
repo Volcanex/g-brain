@@ -699,8 +699,8 @@ def test_late_playhead_ack_targets_cut_reply_and_controls_heard_history(live_env
             previous.first_audio_at = live.time.time() - 1
             await call.on_control({"type": "played", "id": previous.id, "ms": 500})
             await call.on_control({"type": "say", "text": "Next question."})
-            await until(lambda: ws.events("metrics"))
-            assert call.reply is not previous and not previous.remembered.is_set()
+            await until(lambda: call.reply is not previous and previous.cut)
+            assert not previous.remembered.is_set()
             assert live.agent._HISTORY[call.sender] == []
             assert call.heard_ms(previous) == 750
             previous.cut_at = previous.first_audio_at + 0.1
@@ -712,6 +712,8 @@ def test_late_playhead_ack_targets_cut_reply_and_controls_heard_history(live_env
             await until(lambda: len(written) == 4 and not call.background)
             assert live.agent._HISTORY[call.sender][1] == {"role": "assistant", "content": "one two three —"}
             assert not [e for e in ws.events("reply_done") if e["id"] == previous.id]
+            final = [e for e in ws.events("assistant") if e["id"] == previous.id and e["final"]]
+            assert [e["text"] for e in final] == ["one two three —"]
     asyncio.run(run())
 
 

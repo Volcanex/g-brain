@@ -686,8 +686,14 @@ class Call:
         self.replies += 1
         if r.started and not r.cut:
             await self.send({"type": "reply_done", "id": r.id})
+        if r.cut and r.started and not r.ack.is_set():
+            try:
+                await asyncio.wait_for(r.ack.wait(), ACK_WAIT_S)
+            except TimeoutError:
+                pass
         if r.started or r.text:
-            await self.send({"type": "assistant", "id": r.id, "text": r.text, "final": True})
+            # A cut reply's final caption is what was heard, as it is remembered.
+            await self.send({"type": "assistant", "id": r.id, "text": self.said(r), "final": True})
         r.eos_ms = eos_ms = int((r.first_audio_at - r.eos_at) * 1000) if r.started and r.kind != "greet" else None
         if r.stt:
             try:
@@ -708,11 +714,6 @@ class Call:
                         pass
             if self.reply is r and not r.cut and not self.ep.in_speech:
                 await self.set_state("listening")
-        if r.cut and r.started and not r.ack.is_set():
-            try:
-                await asyncio.wait_for(r.ack.wait(), ACK_WAIT_S)
-            except TimeoutError:
-                pass
         await self.remember(r)
 
     async def send_metrics(self, r: Reply):
@@ -739,15 +740,17 @@ class Call:
                     return
         log.warning("live cost unknown for cut reply %s", gen)
 
+    def said(self, r: Reply) -> str:
+        if not r.cut:
+            return r.text.strip()
+        if r.started:
+            return heard(r.text.strip(), self.heard_ms(r), r.audio_ms)
+        return ""                             # cut before a word of it was played
+
     async def remember(self, r: Reply):
         if r.kind == "greet":
             return
-        if not r.cut:
-            said = r.text.strip()
-        elif r.started:
-            said = heard(r.text.strip(), self.heard_ms(r), r.audio_ms)
-        else:
-            said = ""                         # cut before a word of it was played
+        said = self.said(r)
         user = await self.user_text(r) or "(inaudible)"
         if r.prev and not r.prev.remembered.is_set():
             try:
