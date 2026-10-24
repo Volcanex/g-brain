@@ -873,3 +873,13 @@ def test_cost_includes_discarded_stream_late_stt_and_rejected_filler(live_env):
             finally:
                 stt_gate.set()
     asyncio.run(run())
+
+
+def test_call_gets_todo_count_and_soonest_not_every_record():
+    from voice import live
+    todos = [{"slug": f"t{i}", "title": f"T{i}", "due": None if i % 2 else f"2026-11-{i + 1:02d}",
+              "priority": "P2", "body": "long " * 100} for i in range(20)]
+    digest = live._todo_digest(todos, keep=3)
+    assert digest["count"] == 20 and digest["not_shown"] == 17
+    assert [t["slug"] for t in digest["soonest"]] == ["t0", "t2", "t4"]
+    assert "body" not in digest["soonest"][0]

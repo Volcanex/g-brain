@@ -88,6 +88,7 @@ READ_PROMPT = ("You are the voice of a phone assistant recording short audio cli
                "say nothing else. Never reply to it or add words.")
 
 _RECENT: dict[str, deque] = {}
+_LATE: set[asyncio.Task] = set()
 
 
 def _wav(pcm: bytes) -> str:
@@ -149,6 +150,15 @@ def spoken_time(t: datetime.datetime) -> str:
     when = "" if h in (0, 12) else (" in the morning" if h < 12 else " in the afternoon" if h < 17
                                     else " in the evening" if h < 22 else " at night")
     return f"{count} {rel} {hour}{when}"
+
+
+def _todo_digest(todos: list, keep: int = 12) -> dict:
+    """What a call needs from list_todos: the count and the soonest few. The full
+    records (56 with bodies on 2026-10-24) were cut at 6000 characters, so the model
+    could neither count them nor afford them."""
+    soon = sorted(todos, key=lambda t: (t.get("due") or "9999", t.get("priority") or "P9"))
+    items = [{k: t.get(k) for k in ("slug", "title", "due", "priority", "status")} for t in soon[:keep]]
+    return {"count": len(todos), "soonest": items, "not_shown": max(0, len(todos) - keep)}
 
 
 def _plan_id(args) -> str | None:
@@ -500,7 +510,9 @@ class Call:
         except asyncio.CancelledError:
             # Cut off before the usage chunk: ask OpenRouter what it cost instead.
             if r.gen and not r.charged:
-                self.spawn(self.charge_late(r, r.gen))
+                t = asyncio.create_task(self.charge_late(r, r.gen))
+                _LATE.add(t)                  # outlives the call: the stats can take 20 s
+                t.add_done_callback(_LATE.discard)
             raise
 
     async def _stream(self, r: Reply, payload: dict, t_req: float):
@@ -592,6 +604,8 @@ class Call:
                 talk._PROPOSED.get(self.sender, {}).pop(_plan_id(args), None)
         result = gate or await asyncio.to_thread(
             agent._run_tool, name, args, session_id=call_id, turn_id=r.turn)
+        if name == "list_todos" and isinstance(result, list):
+            result = _todo_digest(result)
         if name == "propose_commit" and isinstance(result, dict) and result.get("plan_id"):
             talk._PROPOSED.setdefault(self.sender, {})[result["plan_id"]] = r.gturn
         err = result.get("error") if isinstance(result, dict) else None
@@ -656,20 +670,22 @@ class Call:
                          "cost": round(r.cost, 6)})
 
     async def charge_late(self, r: Reply, gen: str):
-        """OpenRouter bills a cancelled stream for what it generated; its stats appear a
-        moment later. A second metrics event carries the corrected cost."""
-        for delay in (1, 2, 3):
-            await asyncio.sleep(delay)
-            try:
-                resp = await self.http.get(GENERATION_URL, params={"id": gen}, headers=_headers())
-                cost = (resp.json().get("data") or {}).get("total_cost") if resp.status_code == 200 else None
-            except Exception:
-                cost = None
-            if cost is not None:
-                self.charge(r, {"cost": cost})
-                if r.metrics_sent:
-                    await self.send_metrics(r)
-                return
+        """OpenRouter bills a cancelled stream for what it generated; its stats appear
+        5 to 20 s later. A second metrics event carries the corrected cost."""
+        async with httpx.AsyncClient(timeout=10) as http:
+            for delay in (2, 3, 5, 10):
+                await asyncio.sleep(delay)
+                try:
+                    resp = await http.get(GENERATION_URL, params={"id": gen}, headers=_headers())
+                    cost = (resp.json().get("data") or {}).get("total_cost") if resp.status_code == 200 else None
+                except Exception:
+                    cost = None
+                if cost is not None:
+                    self.charge(r, {"cost": cost})
+                    log.info("live late cost sender=%s id=%d cost=$%.5f", self.sender, r.id, cost)
+                    if r.metrics_sent:
+                        await self.send_metrics(r)
+                    return
         log.warning("live cost unknown for cut reply %s", gen)
 
     async def remember(self, r: Reply):

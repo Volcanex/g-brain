@@ -291,7 +291,7 @@ class Bench:
             # A cut reply never gets its usage chunk; the server looks its cost up
             # afterwards and sends corrected metrics.
             with contextlib.suppress(TimeoutError):
-                await self.wait(lambda: count["metrics_events"] >= 2, timeout=10)
+                await self.wait(lambda: count["metrics_events"] >= 2, timeout=25)
             self.cut_cost_known = count["metrics_events"] >= 2
             return self.report()
         finally:
