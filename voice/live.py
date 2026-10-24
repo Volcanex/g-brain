@@ -87,6 +87,8 @@ READ_PROMPT = ("You are the voice of a phone assistant recording short audio cli
                "line in quotes. Speak exactly that line, word for word, in a relaxed natural tone, and "
                "say nothing else. Never reply to it or add words.")
 
+NOW = ("It's {time} now. Times said earlier in this conversation are out of date. "
+       "Answer first in a sentence or two, then stop, with no offer at the end.")
 _RECENT: dict[str, deque] = {}
 _LATE: set[asyncio.Task] = set()
 
@@ -469,6 +471,11 @@ class Call:
     def messages(self, r: Reply) -> list:
         history = agent._HISTORY[self.sender][-agent._MAX_TURNS:]
         msgs = [{"role": "system", "content": self.system_prompt()}] + history
+        if history:
+            # The shared history holds old calls: the bench heard "twenty to midnight"
+            # copied from one at 23:51. The reminder sits last, where it wins.
+            now = datetime.datetime.now(ZoneInfo("Europe/London"))
+            msgs.append({"role": "system", "content": NOW.format(time=spoken_time(now))})
         if r.kind == "greet":
             msgs.append({"role": "user", "content": GREET.format(owner=config.OWNER_NAME)})
         elif r.kind == "text":

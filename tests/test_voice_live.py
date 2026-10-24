@@ -665,10 +665,11 @@ def test_replacement_wakes_playback_and_waits_for_ordered_history(live_env, monk
                 assert not call.reply.task.done()
                 release.set()
                 await until(lambda: len(written) == 4 and not call.background)
-                assert requests[-1]["messages"][-3:] == [
+                msgs = requests[-1]["messages"]
+                assert msgs[-4:-2] == [
                     {"role": "user", "content": "What is due?"},
-                    {"role": "assistant", "content": "one two —"},
-                    {"role": "user", "content": "Next question."}]
+                    {"role": "assistant", "content": "one two —"}]
+                assert msgs[-2]["role"] == "system" and msgs[-1] == {"role": "user", "content": "Next question."}
                 assert written == [("talk", "user", "What is due?"),
                                    ("talk", "assistant", "one two —"),
                                    ("talk", "user", "Next question."),
@@ -901,3 +902,18 @@ def test_call_gets_todo_count_and_soonest_not_every_record():
     assert digest["count"] == 20 and digest["not_shown"] == 17
     assert [t["slug"] for t in digest["soonest"]] == ["t0", "t2", "t4"]
     assert "body" not in digest["soonest"][0]
+
+
+def test_reminder_with_the_time_follows_old_history(live_env, monkeypatch):
+    rounds = [SSE([audio_delta("Nine to midnight.")], 0.0002)]
+
+    async def run():
+        async with live_env(rounds) as (live, call, ws, requests, written):
+            live.agent._HISTORY[call.sender][:] = [{"role": "user", "content": "Time?"},
+                                                   {"role": "assistant", "content": "Twenty to midnight."}]
+            await feed(call, ws, turn_end())
+            await remembered(live, call)
+            msgs = [p for p in requests if p.get("stream")][0]["messages"]
+            assert [m["role"] for m in msgs] == ["system", "user", "assistant", "system", "user"]
+            assert "out of date" in msgs[3]["content"]
+    asyncio.run(run())
