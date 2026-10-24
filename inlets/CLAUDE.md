@@ -7,6 +7,17 @@ never the other way round.
 ## gmail_fetch.py
 Pulls inbox metadata for the pulse layer.
 
+## gmail_apply.py
+Lands a distil run's todos, records the snapshot, then acks the fetch cursor. A
+transient failure (the API down, a 5xx) exits before the ack so the mail comes back.
+A refusal by the owner-action boundary (a 400) is final, so it never blocks the ack:
+project and agent work becomes a ticket with the same `source_key`, a machine alert is
+dropped, and the snapshot lists both under "Not made into todos". Bodies over 800
+characters are trimmed before the write rather than refused. Until 2026-10-24 one
+refused todo failed the whole run and the cursor never moved, so the same mail came
+back and was refused every hour. That fits the inlet's `last_run` stopping on
+2026-10-18, the day the boundary landed.
+
 ## subs.py: recurring charges -> dated todos
 `gfin subs` (in g-finances) knows what recurs and when it next bills and this
 turns each row into a todo and stops there. The `finance` reminder ladder
