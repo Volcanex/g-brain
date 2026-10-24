@@ -121,6 +121,32 @@ def heard(text: str, played_ms: float, audio_ms: float) -> str:
     return " ".join(words[:keep]) + " —" if keep else ""
 
 
+_HOURS = ("twelve", "one", "two", "three", "four", "five", "six", "seven", "eight",
+          "nine", "ten", "eleven")
+_MINUTES = ("", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+            "eleven", "twelve", "thirteen", "fourteen", "quarter", "sixteen", "seventeen",
+            "eighteen", "nineteen", "twenty", "twenty-one", "twenty-two", "twenty-three",
+            "twenty-four", "twenty-five", "twenty-six", "twenty-seven", "twenty-eight",
+            "twenty-nine", "half")
+
+
+def spoken_time(t: datetime.datetime) -> str:
+    """The clock the way people say it ("twenty to midnight"): handed to the model
+    ready-made, because told to say times naturally it still read out "23:42"."""
+    h, m = t.hour, t.minute
+    if m > 30:
+        h, m, rel = (h + 1) % 24, 60 - m, "to"
+    else:
+        rel = "past"
+    hour = "midnight" if h == 0 else "midday" if h == 12 else _HOURS[h % 12]
+    if m == 0:
+        return hour if h in (0, 12) else f"{hour} o'clock"
+    count = _MINUTES[m] + ("" if m % 5 == 0 or m in (15, 30) else " minute" if m == 1 else " minutes")
+    when = "" if h in (0, 12) else (" in the morning" if h < 12 else " in the afternoon" if h < 17
+                                    else " in the evening" if h < 22 else " at night")
+    return f"{count} {rel} {hour}{when}"
+
+
 def _plan_id(args) -> str | None:
     try:
         return (json.loads(args or "{}") or {}).get("plan_id")
@@ -424,7 +450,7 @@ class Call:
         return (SYSTEM + f"You are currently running on the model: {config.LIVE_MODEL}\n"
                 + "\n## Right now (your short-term memory)\n" + self.brief + talk.SPOKEN
                 + LIVE.format(owner=owner) + date_rule(now.date().isoformat())
-                + f"It is {now:%A} {now:%H:%M} in London right now.\n")
+                + f"It's {now:%A}, {spoken_time(now)}, in London right now. Say the time like that.\n")
 
     def messages(self, r: Reply) -> list:
         history = agent._HISTORY[self.sender][-agent._MAX_TURNS:]
@@ -754,7 +780,7 @@ async def _relay(ws: WebSocket, sender: str, voice: str | None, engine: str, gre
     instructions = (SYSTEM + f"You are currently running on the model: {model}\n"
                     + "\n## Right now (your short-term memory)\n" + brief + talk.SPOKEN
                     + LIVE.format(owner=config.OWNER_NAME) + date_rule(now.date().isoformat())
-                    + f"It is {now:%A} {now:%H:%M} in London right now.\n"
+                    + f"It's {now:%A}, {spoken_time(now)}, in London right now. Say the time like that.\n"
                     + ("\n## The conversation so far\n" + history + "\n" if history else ""))
     lock = asyncio.Lock()
     last_user = {"text": ""}

@@ -91,6 +91,7 @@ class Bench:
         self.interruption = None
         self.flush_ms = None
         self.expected_flush = None
+        self.cut_cost_known = False
         self.failure = None
         self.tasks = []
 
@@ -111,7 +112,7 @@ class Bench:
         row = {"label": label, "script": text, "id": None, "onset_at": None,
                "eos_at": None, "first_audio_at": None, "received_bytes": 0,
                "buffer_bytes": 0, "played_bytes": 0, "reply_done": False,
-               "playback_done": False, "flushed": False, "metrics": None,
+               "playback_done": False, "flushed": False, "metrics": None, "metrics_events": 0,
                "reply_text": "", "user_text": ""}
         self.rows.append(row)
         self.pending = row
@@ -165,6 +166,7 @@ class Bench:
                             if not isinstance(ev.get("cost"), (int, float)) or ev["cost"] < 0:
                                 raise ValueError("invalid server cost metric")
                             row["metrics"] = ev
+                            row["metrics_events"] += 1
                             if self.total_cost() >= COST_BUDGET:
                                 raise ValueError("call reached the $0.05 budget")
                         else:
@@ -286,6 +288,11 @@ class Bench:
             await self.wait(lambda: self.flush_ms is not None)
             await self.completed(stop, gap)
             await self.wait(lambda: count["metrics"] is not None)
+            # A cut reply never gets its usage chunk; the server looks its cost up
+            # afterwards and sends corrected metrics.
+            with contextlib.suppress(TimeoutError):
+                await self.wait(lambda: count["metrics_events"] >= 2, timeout=10)
+            self.cut_cost_known = count["metrics_events"] >= 2
             return self.report()
         finally:
             for task in self.tasks:
@@ -316,12 +323,13 @@ class Bench:
                 "flush_ms": round(self.flush_ms, 1), "total_cost": round(self.total_cost(), 6),
                 "per_turn_cost": {r["label"]: r["server"]["cost"] for r in turns},
                 "captions_correct": all(r["caption_correct"] for r in turns if r["script"]),
-                "interruption_answered": acknowledges_stop(turns[-1]["reply_text"])}
+                "interruption_answered": acknowledges_stop(turns[-1]["reply_text"]),
+                "cut_cost_known": self.cut_cost_known}
 
 
 # Which checks decide the exit code for each g-levels gate (charter "voice").
 GATES = {"latency": ("eos_p50", "eos_p90"), "barge-in": ("flush", "interruption"),
-         "cost": ("turn_cost", "total_cost"), "none": ()}
+         "cost": ("turn_cost", "total_cost", "cut_cost"), "none": ()}
 LAST = Path.home() / ".cache" / "voice-live-bench" / "last.json"
 
 
@@ -333,7 +341,8 @@ def evaluate(report, args):
               "turn_cost": statistics.mean(costs) <= args.max_turn_cost,
               "total_cost": report["total_cost"] < COST_BUDGET,
               "captions": report["captions_correct"],
-              "interruption": report["interruption_answered"]}
+              "interruption": report["interruption_answered"],
+              "cut_cost": report.get("cut_cost_known", False)}
     report["checks"] = checks
     report["mean_turn_cost"] = round(statistics.mean(costs), 6)
     deciding = GATES.get(args.gate, tuple(checks))
@@ -457,6 +466,8 @@ async def selftest(args):
                     speaking = unique[marker - 1000]
                     if speaking == STOP:
                         await ws.send(json.dumps({"type": "flush", "id": audible}))
+                        await ws.send(json.dumps({"type": "metrics", "id": audible,
+                                                  "eos_ms": 20, "ttfa_ms": 1, "cost": 0.0001}))
                         await ws.send(json.dumps({"type": "metrics", "id": audible,
                                                   "eos_ms": 20, "ttfa_ms": 1, "cost": 0.0005}))
             elif speaking is not None:
