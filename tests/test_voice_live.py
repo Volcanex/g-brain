@@ -1,8 +1,10 @@
 """Live calls with scripted turn detection and OpenRouter, never the live vault."""
 import asyncio
 import base64
+import hashlib
 import io
 import json
+import os
 import struct
 import wave
 from collections import deque
@@ -106,6 +108,8 @@ def live_env(monkeypatch, tmp_path):
     monkeypatch.setattr(talk, "_PROPOSED", {})
     monkeypatch.setattr(live, "build_brief", lambda: "A test brief.")
     monkeypatch.setattr(live, "FILLER_DIR", str(tmp_path / "fillers"))
+    monkeypatch.setattr(live, "GREETINGS", {})
+    monkeypatch.setattr(live, "_LAST_GREETING", {})
     monkeypatch.setattr(live.config, "LIVE_ENGINE", "openrouter")
     written = []
     monkeypatch.setattr(transcript, "append", lambda *args, **kw: written.append(args))
@@ -333,7 +337,7 @@ def test_tool_gates_never_dispatch(live_env, monkeypatch, sender, name, error):
             result = streams[-1]["messages"][-1]
             assert result["role"] == "tool" and json.loads(result["content"]) == {"error": error}
             if sender == "bench":
-                assert all({t["function"]["name"] for t in p["tools"]} == live.READ_TOOLS for p in streams)
+                assert all({t["function"]["name"] for t in p["tools"]} == live.READ_TOOLS | {"end_call"} for p in streams)
     asyncio.run(run())
 
 
@@ -958,3 +962,103 @@ def test_due_dates_are_said_the_british_way(due, said):
     import datetime
     from voice import live
     assert live.spoken_due(due, datetime.date(2026, 10, 24)) == said
+
+
+def test_ready_greeting_plays_without_a_model_call(live_env, monkeypatch):
+    async def run():
+        from voice import live
+        monkeypatch.setattr(live, "GREETINGS", {b: ("Hey, up late.", "Evening.") for b in
+                                                ("morning", "afternoon", "evening", "late")})
+        cached = {}
+        for line in ("Hey, up late.", "Evening."):
+            key = hashlib.sha1(line.encode()).hexdigest()[:12]
+            path = os.path.join(live.FILLER_DIR, "marin", f"greet-{key}.pcm")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            cached[line] = line.encode().ljust(480, b"\x00")
+            open(path, "wb").write(cached[line])
+        async with live_env(greet=True) as (live, call, ws, requests, written):
+            await until(lambda: ws.events("metrics"))
+            line = ws.events("assistant")[-1]["text"]
+            assert [e for e in ws.sent if isinstance(e, bytes)] == [cached[line]]
+            assert ws.events("reply_done") == [{"type": "reply_done", "id": 1}]
+            assert not [p for p in requests if p.get("stream")]
+            assert live.agent._HISTORY["talk"] == []
+            # The next call doesn't open with the same line.
+            assert call.ready_greeting()[0] != line
+    asyncio.run(run())
+
+
+def test_missing_greetings_are_read_aloud_for_next_time(live_env, monkeypatch):
+    async def run():
+        from voice import live
+        monkeypatch.setattr(live, "GREETINGS", {b: ("Evening.",) for b in
+                                                ("morning", "afternoon", "evening", "late")})
+
+        greeted = asyncio.Event()
+
+        async def handler(payload):
+            if payload["messages"][0]["content"] == live.READ_PROMPT:
+                await greeted.wait()
+                stream = SSE([audio_delta("Evening.", b"\x05\x00" * 240)], 0.0001)
+            else:
+                stream = SSE([audio_delta("Hello there.")], 0.0007)
+            return httpx.Response(200, stream=stream, headers={"content-type": "text/event-stream"})
+
+        async with live_env(greet=True, handler=handler) as (live, call, ws, requests, written):
+            await until(lambda: ws.events("metrics"))
+            assert ws.events("assistant")[-1]["text"] == "Hello there."
+            greeted.set()
+            await until(lambda: os.path.exists(call.greeting_path("Evening.")))
+            assert call.ready_greeting() == ("Evening.", b"\x05\x00" * 240)
+    asyncio.run(run())
+
+
+def test_goodbye_hangs_up_once_it_has_played(live_env):
+    rounds = [SSE([audio_delta("Night, speak soon."), tool_delta("end_call")], 0.0004)]
+
+    async def run():
+        async with live_env(rounds, stt="Cheers, that's all. Bye.") as (live, call, ws, requests, written):
+            await feed(call, ws, turn_end())
+            await until(lambda: ws.events("reply_done"))
+            assert not ws.events("end")
+            ws.control(type="played", id=1, ms=20, done=True)
+            await until(lambda: ws.events("end"))
+            assert ws.client_state == live.WebSocketState.DISCONNECTED
+            assert ws.events("end") == [{"type": "end", "reason": "goodbye"}]
+            assert [e for e in ws.sent if isinstance(e, bytes)] == [b"\x01\x00" * 480]
+            assert len([p for p in requests if p.get("stream")]) == 1
+            assert requests[-1]["tools"][-1]["function"]["name"] == "end_call"
+            await remembered(live, call)
+            assert live.agent._HISTORY["talk"][-1] == {"role": "assistant", "content": "Night, speak soon."}
+    asyncio.run(run())
+
+
+def test_goodbye_tool_without_words_gets_said_then_hangs_up(live_env):
+    rounds = [SSE([tool_delta("end_call")], 0.0002), SSE([audio_delta("Bye.")], 0.0003)]
+
+    async def run():
+        async with live_env(rounds, stt="That's all, bye.") as (live, call, ws, requests, written):
+            await feed(call, ws, turn_end())
+            await until(lambda: ws.events("end"))
+            # No "one sec" before a goodbye.
+            assert [e for e in ws.sent if isinstance(e, bytes)] == [b"\x01\x00" * 480]
+            assert not ws.events("tool")
+            last = [p for p in requests if p.get("stream")][-1]
+            assert last["messages"][-1]["role"] == "tool"
+    asyncio.run(run())
+
+
+def test_talking_over_the_goodbye_keeps_the_call(live_env):
+    rounds = [SSE([audio_delta("Bye then.", b"\x01\x00" * 24000), tool_delta("end_call")], 0.0004),
+              SSE([audio_delta("Go on.")], 0.0003)]
+
+    async def run():
+        async with live_env(rounds, stt="Bye. Oh wait.") as (live, call, ws, requests, written):
+            await feed(call, ws, turn_end())
+            await until(lambda: ws.events("reply_done"))
+            await feed(call, ws, {"type": "speech_confirmed"})
+            await until(lambda: ws.events("flush"))
+            await asyncio.sleep(0.05)
+            assert not ws.events("end")
+            assert ws.client_state == live.WebSocketState.CONNECTED
+    asyncio.run(run())

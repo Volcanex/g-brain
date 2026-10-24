@@ -101,6 +101,14 @@ Engines (`VOICE_LIVE_ENGINE`, default `openrouter`):
   `~/.local/share/voice-live/fillers/<voice>/` and kept only if the model said
   exactly the line. No filler when the model already said something before
   the tool call ("Let me check").
+- The greeting is not a model call: a line for the hour ("Hey, you're up
+  late.") read once per voice into the same folder (`greet-<hash>.pcm`, see
+  `GREETINGS`), never the same one twice running. Lines not read yet are read
+  in the background, and until then the model greets.
+- Saying goodbye ends the call: the model calls `end_call` (offered in every
+  session, bench too, since it writes nothing) with its goodbye, the server
+  waits for the client to finish playing it, sends `end` and closes. Talking
+  over the goodbye or starting a new turn keeps the call up.
 - What the model is handed is shaped for speech, because rules in the prompt
   alone did not hold on gpt-audio-mini: the time comes ready-said
   (`spoken_time`, "twenty to midnight"), a short system note right before each
@@ -154,6 +162,8 @@ checks the `gcommand_auth` cookie and relays frames to `ws://127.0.0.1:8077/live
     reply's stream never reports usage, so its cost is looked up from
     OpenRouter's generation stats (they appear 5 to 20 s late) and a second
     `metrics` for the same id replaces the first.
+  - `{"type":"end","reason":"goodbye"}`: the Voice hung up after its goodbye
+    played; the socket closes next. Show it as an ended call, not a drop.
   - `{"type":"error","message"}`; a fatal one is followed by close.
 
 Measuring it: `python -m voice.live_bench` calls `/live` as `bench` with

@@ -17,6 +17,7 @@ session "talk" reads back on the /voice page, one made with "app" in the app cha
 import asyncio
 import base64
 import datetime
+import hashlib
 import io
 import json
 import logging
@@ -54,6 +55,21 @@ MAX_TURN_S = 120           # one turn sent to the model holds at most this much 
 FILLER_DIR = os.path.join(os.environ.get("VOICE_LIVE_MODELS")
                           or os.path.expanduser("~/.local/share/voice-live"), "fillers")
 FILLERS = ("One sec.", "Let me check.", "Hang on.")
+# Read once per voice like the fillers, so the call picks up at once and the
+# greeting can't contradict the clock ("good morning" at midnight).
+GREETINGS = {
+    "morning": ("Morning, {owner}.", "Hey, morning.", "Morning. What's up?"),
+    "afternoon": ("Hey, {owner}.", "Afternoon.", "Hiya, what's up?"),
+    "evening": ("Evening, {owner}.", "Hey, evening.", "Hiya, what's up?"),
+    "late": ("Hey, you're up late.", "Hey, {owner}. Still up?", "Hiya. What's keeping you up?"),
+}
+END_CALL = {"type": "function", "function": {
+    "name": "end_call",
+    "description": ("Hang up the call. Only when they say goodbye or that they're done with the "
+                    "call (\"bye\", \"that's all, cheers\", \"speak later\"), and say a short "
+                    "goodbye as well. Never for \"stop\" or \"that's enough\": those only stop "
+                    "what you're saying."),
+    "parameters": {"type": "object", "properties": {}}}}
 
 LIVE = """
 ## This is a live voice call
@@ -77,6 +93,7 @@ without announcing it: the call already plays a short "one sec" for you.
 If what you heard is only noise, a cough or half a word, say a short "Sorry,
 say that again?" instead of guessing.
 If they cut you off, drop what you were saying and answer the new thing.
+When they say goodbye, say a short goodbye back and call end_call.
 """
 GREET = ("(The call has just connected and {owner} hasn't said anything yet. Pick up "
          "the way a friend answers the phone: a few words that fit the time of day. "
@@ -91,6 +108,7 @@ NOW = ("If the time comes up, it's {time}. Times said earlier in this conversati
        "When you've done what was asked, stop, with no offer at the end.")
 _RECENT: dict[str, deque] = {}
 _LATE: set[asyncio.Task] = set()
+_LAST_GREETING: dict[str, str] = {}
 
 
 def _wav(pcm: bytes) -> str:
@@ -196,6 +214,16 @@ def spoken_due(due: str | None, today: datetime.date) -> str | None:
     return f"due on {date}"
 
 
+def greeting_band(hour: int) -> str:
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 22:
+        return "evening"
+    return "late"
+
+
 def _plan_id(args) -> str | None:
     try:
         return (json.loads(args or "{}") or {}).get("plan_id")
@@ -237,6 +265,7 @@ class Reply:
         self.cut = False
         self.discard = False                       # merged into a longer turn, never persisted
         self.filler = False
+        self.hangup = False                        # it said goodbye: end the call once played
         self.text = ""
         self.tools: list[str] = []
         self.cost = 0.0
@@ -337,6 +366,7 @@ class Call:
                 transcript.load_tail, self.sender, agent._MAX_TURNS)
         self.brief = await asyncio.to_thread(build_brief)
         self.spawn(self.load_fillers())
+        self.spawn(self.load_greetings())
         if greet:
             await self.start(Reply(self.next_id(), self.turn, "greet"))
         else:
@@ -345,8 +375,8 @@ class Call:
         while True:
             try:
                 msg = await asyncio.wait_for(self.ws.receive(), deadline - time.time())
-            except TimeoutError:
-                break
+            except (TimeoutError, RuntimeError):
+                break                         # RuntimeError: we hung up and the socket is gone
             if msg["type"] == "websocket.disconnect":
                 break
             if msg.get("bytes") is not None:
@@ -522,6 +552,13 @@ class Call:
         return msgs
 
     async def respond(self, r: Reply):
+        if r.kind == "greet":
+            line, pcm = self.ready_greeting()
+            if pcm:
+                r.text = line
+                await self.send({"type": "assistant", "id": r.id, "text": line, "final": False})
+                await self.speak(r, pcm)
+                return
         await self.set_state("thinking")
         if r.prev and not r.prev.remembered.is_set():
             # The turn before, as far as it was heard, belongs in this request.
@@ -532,6 +569,11 @@ class Call:
         messages = self.messages(r)
         for _ in range(config.MAX_TOOL_ITERATIONS):
             said, calls = await self.stream(r, messages, tools=r.kind != "greet")
+            work = [c for c in calls if c["function"]["name"] != "end_call"]
+            if len(work) < len(calls):
+                r.hangup = True
+                if said.strip() and not work:
+                    return                    # the goodbye is said: hang up once it has played
             if not calls:
                 return
             messages.append({"role": "assistant", "content": said or None, "tool_calls": calls})
@@ -541,7 +583,7 @@ class Call:
                 if not r.text.endswith(" "):
                     r.text += " "
                     await self.send({"type": "assistant", "id": r.id, "text": " ", "final": False})
-            else:
+            elif work:
                 await self.play_filler(r)
             for call in calls:
                 messages.append(await self.run_tool(r, call))
@@ -553,7 +595,7 @@ class Call:
                    "max_tokens": MAX_TOKENS, "usage": {"include": True}}
         if tools:
             payload["tools"] = [t for t in agent.TOOLS if self.sender != "bench"
-                                or t["function"]["name"] in READ_TOOLS]
+                                or t["function"]["name"] in READ_TOOLS] + [END_CALL]
             payload["tool_choice"] = "auto"
         t_req = time.time()
         try:
@@ -633,6 +675,9 @@ class Call:
         name = call["function"]["name"]
         args = call["function"].get("arguments")
         r.tools.append(name)
+        if name == "end_call":
+            return {"role": "tool", "tool_call_id": call["id"],
+                    "content": json.dumps({"ok": "the call ends once your goodbye has played"})}
         if self.sender == "bench" and name not in READ_TOOLS:
             return {"role": "tool", "tool_call_id": call["id"],
                     "content": json.dumps({"error": "read-only session"})}
@@ -704,7 +749,9 @@ class Call:
         log.info("live reply sender=%s id=%d kind=%s eos_ms=%s ttfa_ms=%s audio_ms=%d cut=%s tools=%s cost=$%.5f",
                  self.sender, r.id, r.kind, eos_ms, r.ttfa_ms, r.audio_ms, r.cut,
                  ",".join(r.tools) or "-", r.cost)
-        if self.reply is r and not r.cut and not self.ep.in_speech:
+        if r.hangup and not r.cut and await self.hang_up(r):
+            pass
+        elif self.reply is r and not r.cut and not self.ep.in_speech:
             if r.started:
                 left = r.first_audio_at + r.audio_ms / 1000 - time.time()
                 if left > 0 and not r.playback_done:
@@ -715,6 +762,25 @@ class Call:
             if self.reply is r and not r.cut and not self.ep.in_speech:
                 await self.set_state("listening")
         await self.remember(r)
+
+    async def hang_up(self, r: Reply) -> bool:
+        """End the call from this side once the goodbye has played, unless they
+        talked over it or started a new turn."""
+        left = r.first_audio_at + r.audio_ms / 1000 - time.time() if r.started else 0
+        if left > 0 and not r.playback_done:
+            try:
+                await asyncio.wait_for(r.ended.wait(), left + 1)
+            except TimeoutError:
+                pass
+        if r.cut or self.reply is not r or self.ep.in_speech:
+            return False
+        log.info("live call hung up after goodbye sender=%s id=%d", self.sender, r.id)
+        await self.send({"type": "end", "reason": "goodbye"})
+        try:
+            await self.ws.close(code=1000)
+        except Exception:
+            pass
+        return True
 
     async def send_metrics(self, r: Reply):
         r.metrics_sent = True
@@ -814,6 +880,44 @@ class Call:
             with open(path, "rb") as f:
                 out.append(f.read())
         self.fillers = out
+
+    def greeting_path(self, line: str) -> str:
+        key = hashlib.sha1(line.encode()).hexdigest()[:12]
+        return os.path.join(FILLER_DIR, self.voice, f"greet-{key}.pcm")
+
+    def greeting_lines(self, band: str) -> list[str]:
+        return [g.format(owner=config.OWNER_NAME) for g in GREETINGS.get(band, ())]
+
+    def ready_greeting(self) -> tuple[str, bytes]:
+        band = greeting_band(datetime.datetime.now(ZoneInfo("Europe/London")).hour)
+        ready = [g for g in self.greeting_lines(band) if os.path.exists(self.greeting_path(g))]
+        if len(ready) > 1:
+            ready = [g for g in ready if g != _LAST_GREETING.get(self.sender)]
+        if not ready:
+            return "", b""
+        line = random.choice(ready)
+        _LAST_GREETING[self.sender] = line
+        with open(self.greeting_path(line), "rb") as f:
+            return line, f.read()
+
+    async def load_greetings(self):
+        """Read any missing greetings aloud, this hour's first; the model greets until then."""
+        now = greeting_band(datetime.datetime.now(ZoneInfo("Europe/London")).hour)
+        for band in sorted(GREETINGS, key=lambda b: b != now):
+            for line in self.greeting_lines(band):
+                path = self.greeting_path(line)
+                if os.path.exists(path):
+                    continue
+                try:
+                    pcm = await self.read_aloud(line)
+                except Exception as e:
+                    log.warning("live greeting %r failed: %s", line, e)
+                    continue
+                if pcm:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path + ".tmp", "wb") as f:
+                        f.write(pcm)
+                    os.replace(path + ".tmp", path)
 
     async def read_aloud(self, line: str) -> bytes:
         payload = {"model": config.LIVE_MODEL, "stream": True, "modalities": ["text", "audio"],
