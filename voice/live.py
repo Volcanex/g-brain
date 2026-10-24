@@ -88,7 +88,7 @@ READ_PROMPT = ("You are the voice of a phone assistant recording short audio cli
                "say nothing else. Never reply to it or add words.")
 
 NOW = ("It's {time} now. Times said earlier in this conversation are out of date. "
-       "Answer first in a sentence or two, then stop, with no offer at the end.")
+       "When you've done what was asked, stop, with no offer at the end.")
 _RECENT: dict[str, deque] = {}
 _LATE: set[asyncio.Task] = set()
 
