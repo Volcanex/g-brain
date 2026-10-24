@@ -48,6 +48,24 @@ MCP tools use.
   its OpenRouter providers silently drop the image once the real prompt and
   history are in the request (measured 2026-10-23, see `config.py`). Re-test
   with a full-prompt request, not a bare one, before changing either model. History keeps `[photo]` / `[file: name]` and the upload ids.
+- **Todos and the calendar are one thing** (the calendar is the dated todos).
+  `todos.py` changes them: `update_todo` (title, date, time, priority, star,
+  category, location), `reschedule_todo`, `mark_done`, `mark_failed`
+  (did-not-happen), `drop_todo` (cancelled), plus `create_todo` (wraps
+  `tools.create_todo`). Every write is `brain_todos._update`, the function
+  behind the brain's `PATCH /api/todos/<slug>` that the dash and Day view reach
+  through G-Command's `/api/brain` proxy; field meanings follow the Day view
+  (star = `urgent`, recurring todos tick one date). Natural dates resolve in
+  Europe/London. A target matching several todos changes nothing and returns
+  the candidates as rows; the model asks.
+- **Voice never deletes a todo.** `delete_todo` writes nothing: it returns the
+  todo as a row whose `action` is `DELETE /api/brain/api/todos/<slug>`, and the
+  app's Delete button is the only way it goes. Do not add a delete path to
+  Voice, and do not let the model write actions: only rows `todos.py` builds
+  (`blocks.clean(actions=True)` in `appchat`) may carry one; model rows from
+  `attach_blocks` still lose theirs. Every todo change returns its row under
+  `todos.BLOCKS`; the app session draws it, `agent._run_tool` strips it for
+  WhatsApp and talk, which share the same tools.
 - **Agent activity is READ ONLY, by design.** `agent_activity` reads tmux
   sessions, pane tails and recent Claude Code session files through
   g-command-web's `GET /api/sessions/activity`, with a five-minute grant the
@@ -68,6 +86,7 @@ MCP tools use.
   moved by setting `VOICE_TRANSCRIPT_DIR`, which the tests do). To review a
   conversation: `cat $BRAIN_ROOT/.pulse/state/voice/+<number>.jsonl`
 - `tools.py`: brain tool wrappers (the bounded toolset)
+- `todos.py`: todo and calendar changes, date phrases, the delete guard (above)
 - `whatsapp.py`: Telnyx WhatsApp transport: send (`POST /v2/messages/whatsapp`)
   + Ed25519 webhook verify + inbound parse. `parse_inbound` yields
   `(sender, text, media)` where `media` is a list of `{url, content_type}` dicts

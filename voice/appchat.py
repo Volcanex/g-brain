@@ -26,7 +26,7 @@ import time
 
 import httpx
 
-from . import agent, blocks, config, talk, transcript
+from . import agent, blocks, config, talk, todos, transcript
 from .brief import build_brief
 from .prompt import SYSTEM, date_rule
 
@@ -53,6 +53,10 @@ single fact or a yes/no:
   status -> rows with chips; secondary caveats or small print -> detail; a long
   tail the owner may not need -> a fold (collapsed) holding it; a photo from this
   chat -> image with its url. The tool says what it dropped, so fix and retry.
+- Todo changes (update_todo, reschedule_todo, mark_done, mark_failed,
+  drop_todo) draw the changed todo as a row by themselves; do not attach it
+  again. delete_todo deletes nothing: it shows the todo with a Delete button
+  that only the owner can tap. Say that plainly.
 - agent_activity: what the coding agents are doing across hosts (tmux sessions,
   their latest pane output, recent Claude Code sessions). It is READ ONLY. You
   can never type into, answer, draft for or drive an agent session; if asked to,
@@ -218,7 +222,15 @@ def stream_turn(session, text, *, budget=None, images=None, files=None, attachme
             if name in ("show_panel", "attach_blocks", "agent_activity"):
                 result = _app_tool(name, args, state, activity)
             else:
-                result = agent._run_tool(name, args, session_id=call["id"], turn_id=turn_index)
+                result = agent._run_tool(name, args, session_id=call["id"], turn_id=turn_index,
+                                         keep_blocks=True)
+                rows = result.pop(todos.BLOCKS, None) if isinstance(result, dict) else None
+                if rows:
+                    # Built by todos.py, not the model: the one place a reply row
+                    # may carry an action (delete_todo's Delete button).
+                    good = blocks.clean(rows, actions=True)
+                    state.extend(good[:max(0, blocks.MAX_BLOCKS - len(state))])
+                    result["shown"] = "The app shows this as a row under your reply; do not retype it."
             err = result.get("error") if isinstance(result, dict) else None
             agent.log.info("tool sender=%s name=%s args=%s -> %s", session, name,
                            str(args)[:300], f"ERROR {err}" if err else "ok")

@@ -12,7 +12,7 @@ import logging
 
 import httpx
 
-from . import config, tools, transcript
+from . import config, todos, tools, transcript
 from .brief import build_brief
 from .prompt import GUEST_SYSTEM, SYSTEM, date_rule
 
@@ -54,6 +54,41 @@ TOOLS = [
             "location": {"type": "string"}},
             "required": ["title", "category"]}}},
     {"type": "function", "function": {
+        "name": "update_todo",
+        "description": "Change one todo or calendar item: title, date, time, priority, star, category, location. target is its slug or words from its title. date and time take natural phrases (tomorrow, next Friday, 3pm). If the result says ambiguous, ask which one; never guess.",
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string"}, "title": {"type": "string"},
+            "date": {"type": "string", "description": "New day: YYYY-MM-DD or a phrase like tomorrow, next Friday."},
+            "time": {"type": "string", "description": "New time, e.g. 15:00 or 3pm. Makes it a timed event."},
+            "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
+            "starred": {"type": "boolean", "description": "Star (urgent) or unstar."},
+            "category": {"type": "string"}, "location": {"type": "string"}},
+            "required": ["target"]}}},
+    {"type": "function", "function": {
+        "name": "reschedule_todo",
+        "description": "Move one todo to another day. when: YYYY-MM-DD or tomorrow, next Friday, in 3 days. Recurring todos cannot be moved.",
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string"}, "when": {"type": "string"}, "time": {"type": "string"}},
+            "required": ["target", "when"]}}},
+    {"type": "function", "function": {
+        "name": "mark_done",
+        "description": "Mark one todo done. A recurring one ticks only today (or date).",
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string"}, "date": {"type": "string"}}, "required": ["target"]}}},
+    {"type": "function", "function": {
+        "name": "mark_failed",
+        "description": "Mark one todo as did-not-happen. A recurring one marks only today (or date).",
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string"}, "date": {"type": "string"}}, "required": ["target"]}}},
+    {"type": "function", "function": {
+        "name": "drop_todo",
+        "description": "Drop one todo (cancelled: it no longer needs doing). Not a delete.",
+        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
+    {"type": "function", "function": {
+        "name": "delete_todo",
+        "description": "Asked to delete a todo: this NEVER deletes. It shows the todo with a Delete button the owner taps himself. Say so.",
+        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
+    {"type": "function", "function": {
         "name": "pulse_note",
         "description": f"Append one short undated snippet of current context to the pulse page (short-term memory). Use when {config.OWNER_NAME} states a currently-true fact in passing ('working from the library this week', 'leaning toward X'). Dated/actionable things -> create_todo instead. Confirm you noted it.",
         "parameters": {"type": "object", "properties": {
@@ -80,7 +115,13 @@ DISPATCH = {
     "brain_read": tools.brain_read,
     "recent_activity": tools.recent_activity,
     "list_todos": tools.list_todos,
-    "create_todo": tools.create_todo,
+    "create_todo": todos.create_todo,
+    "update_todo": todos.update_todo,
+    "reschedule_todo": todos.reschedule_todo,
+    "mark_done": todos.mark_done,
+    "mark_failed": todos.mark_failed,
+    "drop_todo": todos.drop_todo,
+    "delete_todo": todos.delete_todo,
     "pulse_note": tools.pulse_note,
     "pulse_page": tools.pulse_page,
     "propose_commit": tools.propose_commit,
@@ -109,7 +150,16 @@ def _call_model(messages, use_tools=True):
         return r.json()["choices"][0]["message"]
 
 
-def _run_tool(name, args_json, *, session_id=None, turn_id=None):
+def _run_tool(name, args_json, *, session_id=None, turn_id=None, keep_blocks=False):
+    """Run one tool. Todo changes return rows under todos.BLOCKS for the app
+    session (keep_blocks=True); every other caller gets them stripped."""
+    result = _dispatch(name, args_json, session_id=session_id, turn_id=turn_id)
+    if not keep_blocks and isinstance(result, dict):
+        result.pop(todos.BLOCKS, None)
+    return result
+
+
+def _dispatch(name, args_json, *, session_id=None, turn_id=None):
     fn = DISPATCH.get(name)
     if fn is None:
         return {"error": f"unknown tool {name}"}

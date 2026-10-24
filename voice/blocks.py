@@ -64,7 +64,24 @@ def _chips(items):
     return [x for x in (chip(c) for c in (items or [])[:MAX_ITEMS]) if x] if isinstance(items, list) else []
 
 
-def row(r, i):
+# The only actions a reply row may carry, and only on rows Voice's own code
+# built (todos.py, via clean(actions=True)), never on rows the model wrote.
+ACTION_PATH = re.compile(r"^/api/brain/api/todos/[A-Za-z0-9~!*'()%_.\-]+$")
+
+
+def action(a):
+    if not (isinstance(a, dict) and a.get("method") in ("PATCH", "DELETE")
+            and isinstance(a.get("path"), str) and ACTION_PATH.match(a["path"]) and _text(a.get("label"), 40)):
+        return None
+    out = {"label": _text(a["label"], 40), "method": a["method"], "path": a["path"]}
+    if isinstance(a.get("body"), dict):
+        out["body"] = a["body"]
+    if isinstance(a.get("error"), dict):
+        out["error"] = {k: _text(a["error"].get(k), 300) for k in ("title", "desc") if _text(a["error"].get(k), 300)}
+    return out
+
+
+def row(r, i, actions=False):
     if isinstance(r, str):
         r = {"title": r}
     if not isinstance(r, dict) or not _text(r.get("title")):
@@ -87,17 +104,19 @@ def row(r, i):
     marks = _chips(r.get("marks"))
     if marks:
         out["marks"] = marks
-    # No `action`: a reply's rows are a snapshot. Ticks belong to live panels,
-    # whose server-built actions know the todo's semantics.
+    # No `action` on rows the model wrote: a reply's rows are a snapshot, and
+    # ticks belong to live panels. todos.py's rows are server-built and may.
+    if actions and action(r.get("action")):
+        out["action"] = action(r["action"])
     return out
 
 
-def _block(b, depth):
+def _block(b, depth, actions=False):
     if not isinstance(b, dict):
         return None
     t = b.get("type")
     if t == "rows":
-        rows = [x for x in (row(r, i) for i, r in enumerate((b.get("rows") or [])[:MAX_ROWS])) if x] \
+        rows = [x for x in (row(r, i, actions) for i, r in enumerate((b.get("rows") or [])[:MAX_ROWS])) if x] \
             if isinstance(b.get("rows"), list) else []
         out = {"type": "rows", "rows": rows}
         if _text(b.get("title"), 120):
@@ -166,13 +185,13 @@ def _block(b, depth):
     return None
 
 
-def clean(blocks, depth=0):
+def clean(blocks, depth=0, actions=False):
     """The blocks that fit the contract, in order, at most MAX_BLOCKS."""
     if not isinstance(blocks, list):
         return []
     out = []
     for b in blocks:
-        x = _block(b, depth)
+        x = _block(b, depth, actions)
         if x:
             out.append(x)
         if len(out) >= MAX_BLOCKS:
