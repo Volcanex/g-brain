@@ -6,6 +6,7 @@ import io
 import json
 import os
 import struct
+import time
 import wave
 from collections import deque
 from contextlib import asynccontextmanager
@@ -946,6 +947,46 @@ def test_asking_again_next_turn_pages_on_and_a_later_ask_starts_over(live_env, m
     asyncio.run(run())
 
 
+def test_the_same_list_asked_again_pages_on_and_a_different_one_starts_over(live_env, monkeypatch):
+    todos = [{"slug": f"t{i}", "title": f"T{i}", "due": f"2099-11-{i + 1:02d}"} for i in range(8)]
+    asks = {"a": "{}", "b": '{"status": "open"}', "c": '{"priority": "P1"}'}
+    rounds = []
+    for cid, args in asks.items():
+        rounds += [SSE([tool_delta("list_todos", args, cid=cid)], 0.0001), SSE([audio_delta("Right.")], 0.0001)]
+
+    async def run():
+        async with live_env(rounds) as (live, call, ws, requests, written):
+            monkeypatch.setattr(live.agent, "_run_tool", lambda *a, **kw: list(todos))
+            for _ in asks:
+                n = len(live.agent._HISTORY["talk"])
+                if call.reply:
+                    ws.control(type="played", id=call.reply.id, ms=20, done=True)
+                    await until(lambda: call.reply.playback_done)
+                await feed(call, ws, turn_end())
+                await until(lambda: len(live.agent._HISTORY["talk"]) >= n + 2 and not call.background)
+            pages = {m["tool_call_id"]: m["content"] for p in requests for m in p.get("messages", [])
+                     if m.get("role") == "tool"}
+            slugs = [[t["slug"] for t in json.loads(pages[c])["say_these"]] for c in asks]
+            assert slugs == [["t0", "t1", "t2"], ["t3", "t4", "t5"], ["t0", "t1", "t2"]]
+    asyncio.run(run())
+
+
+def test_hang_up_waits_for_the_goodbye_to_play_when_its_stream_stalled(live_env):
+    async def run():
+        async with live_env() as (live, call, ws, requests, written):
+            r = live.Reply(9, 1, "audio")
+            r.started, r.first_audio_at, r.audio_ms = True, time.time() - 5, 1000
+            call.reply = r
+            hang = asyncio.create_task(call.hang_up(r))
+            await asyncio.sleep(0.3)
+            assert not hang.done() and not ws.events("end")
+            r.playback_done = True
+            r.ended.set()
+            assert await hang
+            assert ws.events("end") == [{"type": "end", "reason": "goodbye"}]
+    asyncio.run(run())
+
+
 def test_reminder_with_the_time_follows_old_history(live_env, monkeypatch):
     rounds = [SSE([audio_delta("Nine to midnight.")], 0.0002)]
 
@@ -1010,8 +1051,11 @@ def test_ready_greeting_plays_without_a_model_call(live_env, monkeypatch):
             assert ws.events("reply_done") == [{"type": "reply_done", "id": 1}]
             assert not [p for p in requests if p.get("stream")]
             assert live.agent._HISTORY["talk"] == []
-            # The next call doesn't open with the same line.
-            assert call.ready_greeting()[0] != line
+            # The next call doesn't open with the same line, even when it's the only one cached.
+            other, _ = call.ready_greeting()
+            assert other != line
+            os.remove(call.line_path(line))
+            assert call.ready_greeting() == ("", b"")
     asyncio.run(run())
 
 
@@ -1067,6 +1111,8 @@ def test_goodbye_tool_without_words_gets_said_then_hangs_up(live_env):
     async def run():
         async with live_env(rounds, stt="That's all, bye.") as (live, call, ws, requests, written):
             await feed(call, ws, turn_end())
+            await until(lambda: ws.events("reply_done"))
+            ws.control(type="played", id=1, ms=20, done=True)
             await until(lambda: ws.events("end"))
             # No "one sec" before a goodbye.
             assert [e for e in ws.sent if isinstance(e, bytes)] == [b"\x01\x00" * 480]
@@ -1102,6 +1148,8 @@ def test_goodbye_tool_without_words_plays_a_ready_goodbye(live_env, monkeypatch)
         open(os.path.join(live.FILLER_DIR, "marin", f"line-{key}.pcm"), "wb").write(b"\x07\x00" * 240)
         async with live_env(rounds, stt="That's all, bye.") as (live, call, ws, requests, written):
             await feed(call, ws, turn_end())
+            await until(lambda: ws.events("reply_done"))
+            ws.control(type="played", id=1, ms=10, done=True)
             await until(lambda: ws.events("end"))
             assert [e for e in ws.sent if isinstance(e, bytes)] == [b"\x07\x00" * 240]
             assert len([p for p in requests if p.get("stream")]) == 1

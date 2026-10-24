@@ -190,6 +190,18 @@ def _todo_digest(todos: list, start: int = 0) -> dict:
             "more_after_these": max(0, len(todos) - start - len(page))}
 
 
+def _todo_query(args) -> str:
+    """The query with defaults filled in: the model asks for the same list with and
+    without status "open"."""
+    try:
+        a = json.loads(args) if isinstance(args, str) else dict(args or {})
+    except (ValueError, TypeError):
+        a = {}
+    if not isinstance(a, dict):
+        a = {}
+    return json.dumps({"status": "open", **{k: v for k, v in a.items() if v is not None}}, sort_keys=True)
+
+
 def spoken_due(due: str | None, today: datetime.date) -> str | None:
     """"overdue since the 10th of October", "due tomorrow", "due on Friday": read as
     an ISO date it came out "October 10", American and with no word that it was late."""
@@ -270,6 +282,7 @@ class Reply:
         self.discard = False                       # merged into a longer turn, never persisted
         self.filler = False
         self.hangup = False                        # it said goodbye: end the call once played
+        self.todo_page = None                      # list_todos paging, kept once heard
         self.text = ""
         self.tools: list[str] = []
         self.cost = 0.0
@@ -314,7 +327,7 @@ class Call:
         self.state = ""
         self.brief = ""
         self.fillers: list[bytes] = []
-        self.todo_at = (0, 0)               # turn and next item of the last list_todos
+        self.todo_at = (0, 0, "")           # turn, next item and query of the last list_todos heard
         self.cost = 0.0
         self.replies = 0
         self.started = time.time()
@@ -706,11 +719,13 @@ class Call:
         result = gate or await asyncio.to_thread(
             agent._run_tool, name, args, session_id=call_id, turn_id=r.turn)
         if name == "list_todos" and isinstance(result, list):
-            # Asked again in the next turn ("what else?"), it pages on.
-            turn, start = self.todo_at
-            start = start if r.turn - turn <= 1 and start < len(result) else 0
+            # Asked again in the next turn ("what else?"), it pages on. A different
+            # query starts over, and close_out keeps the page only if it was heard.
+            key = _todo_query(args)
+            turn, start, last = self.todo_at
+            start = start if r.turn - turn <= 1 and key == last and start < len(result) else 0
             result = _todo_digest(result, start)
-            self.todo_at = (r.turn, start + len(result["say_these"]))
+            r.todo_page = (r.turn, start + len(result["say_these"]), key, r.audio_ms)
         if name == "propose_commit" and isinstance(result, dict) and result.get("plan_id"):
             talk._PROPOSED.setdefault(self.sender, {})[result["plan_id"]] = r.gturn
         err = result.get("error") if isinstance(result, dict) else None
@@ -745,6 +760,8 @@ class Call:
                 await asyncio.wait_for(r.ack.wait(), ACK_WAIT_S)
             except TimeoutError:
                 pass
+        if r.todo_page and (not r.cut or r.played_ms > r.todo_page[3]):
+            self.todo_at = r.todo_page[:3]    # cut before the list arrived, it was never heard
         if r.started or r.text:
             # A cut reply's final caption is what was heard, as it is remembered.
             await self.send({"type": "assistant", "id": r.id, "text": self.said(r), "final": True})
@@ -774,21 +791,23 @@ class Call:
 
     async def hang_up(self, r: Reply) -> bool:
         """End the call from this side once the goodbye has played, unless they
-        talked over it or started a new turn."""
-        left = r.first_audio_at + r.audio_ms / 1000 - time.time() if r.started else 0
-        if left > 0 and not r.playback_done:
+        talked over it or started a new turn. The client's done ack is the signal:
+        a deadline from the first audio runs short when the stream stalled."""
+        if r.started and not r.playback_done:
+            left = r.first_audio_at + r.audio_ms / 1000 - time.time()
             try:
-                await asyncio.wait_for(r.ended.wait(), left + 1)
+                await asyncio.wait_for(r.ended.wait(), max(left, 0) + 2)
             except TimeoutError:
                 pass
-        if r.cut or self.reply is not r or self.ep.in_speech:
-            return False
-        log.info("live call hung up after goodbye sender=%s id=%d", self.sender, r.id)
-        await self.send({"type": "end", "reason": "goodbye"})
-        try:
-            await self.ws.close(code=1000)
-        except Exception:
-            pass
+        async with self.send_lock:            # nothing can cut in between the check and the end
+            if r.cut or self.reply is not r or self.ep.in_speech:
+                return False
+            log.info("live call hung up after goodbye sender=%s id=%d", self.sender, r.id)
+            try:
+                await self.ws.send_text(json.dumps({"type": "end", "reason": "goodbye"}))
+                await self.ws.close(code=1000)
+            except Exception:
+                pass
         return True
 
     async def send_metrics(self, r: Reply):
@@ -899,9 +918,8 @@ class Call:
 
     def ready_greeting(self) -> tuple[str, bytes]:
         band = greeting_band(datetime.datetime.now(ZoneInfo("Europe/London")).hour)
-        ready = [g for g in self.greeting_lines(band) if os.path.exists(self.line_path(g))]
-        if len(ready) > 1:
-            ready = [g for g in ready if g != _LAST_GREETING.get(self.sender)]
+        ready = [g for g in self.greeting_lines(band) if os.path.exists(self.line_path(g))
+                 and g != _LAST_GREETING.get(self.sender)]
         if not ready:
             return "", b""
         line = random.choice(ready)
