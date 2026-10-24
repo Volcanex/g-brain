@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import wave
 from collections import deque
@@ -63,6 +64,13 @@ GREETINGS = {
     "evening": ("Evening, {owner}.", "Hey, evening.", "Hiya, what's up?"),
     "late": ("Hey, you're up late.", "Hey, {owner}. Still up?", "Hiya. What's keeping you up?"),
 }
+# end_call hangs up only when their words say goodbye: "Okay, stop. That's enough."
+# after a long answer means stop talking, and the model hung up on it in two of
+# three bench runs on 2026-10-25. Staying on the line is the safe way to be wrong.
+GOODBYE_WORDS = re.compile(
+    r"\b(bye|goodbye|(good ?)?night|ta-?ra|cheerio|see (you|ya)|speak soon|"
+    r"talk (to you )?(soon|later)|catch you|that['’]?s all|that['’]?s it for now|hang up|"
+    r"end (the )?call|i['’]?m off|got to go|gotta go)\b", re.I)
 # For a goodbye given as a bare end_call: a second model call only to say "Bye."
 # took most of a second.
 GOODBYES = ("Bye.", "Speak soon.", "See you.")
@@ -588,10 +596,12 @@ class Call:
         for _ in range(config.MAX_TOOL_ITERATIONS):
             said, calls = await self.stream(r, messages, tools=r.kind != "greet")
             work = [c for c in calls if c["function"]["name"] != "end_call"]
-            if len(work) < len(calls):
+            if len(work) < len(calls) and GOODBYE_WORDS.search(await self.user_text(r)):
                 r.hangup = True
                 if not work and (said.strip() or await self.say_goodbye(r)):
                     return                    # the goodbye is said: hang up once it has played
+            elif len(work) < len(calls) and not work and said.strip():
+                return                        # not a goodbye: it answered, and the call stays up
             if not calls:
                 return
             messages.append({"role": "assistant", "content": said or None, "tool_calls": calls})
@@ -694,8 +704,9 @@ class Call:
         args = call["function"].get("arguments")
         r.tools.append(name)
         if name == "end_call":
-            return {"role": "tool", "tool_call_id": call["id"],
-                    "content": json.dumps({"ok": "the call ends once your goodbye has played"})}
+            result = ({"ok": "the call ends once your goodbye has played"} if r.hangup else
+                      {"error": "they did not say goodbye, so the call stays up: answer what they said"})
+            return {"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result)}
         if self.sender == "bench" and name not in READ_TOOLS:
             return {"role": "tool", "tool_call_id": call["id"],
                     "content": json.dumps({"error": "read-only session"})}
