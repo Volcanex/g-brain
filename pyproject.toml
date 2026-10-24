@@ -16,6 +16,9 @@ dependencies = [
     "python-frontmatter>=1.1",
     "httpx>=0.27",
     "semble>=0.1",
+    "onnxruntime>=1.31",
+    "numpy>=2.0",
+    "websockets>=13",
 ]
 
 [project.optional-dependencies]

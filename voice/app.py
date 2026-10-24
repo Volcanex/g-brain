@@ -7,6 +7,7 @@
   POST /chat/stream  app session turn as NDJSON: delta, tool, done
   POST /talk     spoken turn, NDJSON stream of sentences (localhost, talk page)
   POST /tts      one sentence to WAV via the warm Kokoro service (localhost)
+  WS   /live     live call, speech to speech (localhost; live.py, CLAUDE.md "Live call")
 
 Run: uvicorn voice.app:app --host 127.0.0.1 --port 8077  (from the repo root)
 """
@@ -18,11 +19,11 @@ import sys
 import httpx
 
 import brain_alerts
-from fastapi import BackgroundTasks, FastAPI, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Request, Response, WebSocket
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import agent, appchat, config, talk, whatsapp
+from . import agent, appchat, config, live, talk, whatsapp
 from .health import deep_health
 
 log = logging.getLogger("voice")
@@ -154,6 +155,13 @@ def talk_turn(body: TalkIn):
             yield json.dumps({"t": "error", "error": f"{type(e).__name__}: {e}"}) + "\n"
     return StreamingResponse(lines(), media_type="application/x-ndjson",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.websocket("/live")
+async def live_call(ws: WebSocket):
+    """Live call: PCM16 24 kHz frames both ways, JSON control. Localhost only;
+    gcommand authenticates the person and relays."""
+    await live.serve(ws)
 
 
 TTS_URL = os.environ.get("VOICE_TTS_URL", "http://127.0.0.1:8078")

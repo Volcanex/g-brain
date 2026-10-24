@@ -68,8 +68,10 @@ def is_confirmation(text: str) -> bool:
     return bool(_CONFIRM.fullmatch(" ".join((text or "").split())))
 
 
-def _commit_gate(sender: str, args_json, text: str):
-    """None if execute_commit may run on this spoken turn, else an error dict."""
+def _commit_gate(sender: str, args_json, text: str, turn: int | None = None):
+    """None if execute_commit may run on this spoken turn, else an error dict.
+    `turn` is the executing turn's own number when the caller knows it (a live
+    call), so another surface advancing _TURN cannot make a plan look older."""
     try:
         plan_id = (json.loads(args_json or "{}") or {}).get("plan_id")
     except (json.JSONDecodeError, AttributeError):
@@ -77,7 +79,7 @@ def _commit_gate(sender: str, args_json, text: str):
     proposed = _PROPOSED.get(sender, {})
     if not plan_id or plan_id not in proposed:
         return {"error": "no plan with that id was proposed on this call; call propose_commit first"}
-    if proposed[plan_id] >= _TURN.get(sender, 0):
+    if proposed[plan_id] >= (_TURN.get(sender, 0) if turn is None else turn):
         return {"error": "say what you will write and wait for an explicit yes on the next turn"}
     if not is_confirmation(text):
         return {"error": "the last thing said was not a clear yes; ask again and wait"}

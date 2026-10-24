@@ -76,6 +76,78 @@ MCP tools use.
   `load_tail` still reads only role and text, so the model never re-reads
   old block JSON.
 
+## Live call (`/live`, speech to speech)
+A phone-call conversation: the person talks, the Voice answers out loud within
+about a second, and either can cut the other off. One WebSocket per call.
+`live.py` runs the call; `turn.py` decides when the person has finished
+speaking; `realtime.py` relays to a provider that does its own turn-taking.
+
+Engines (`VOICE_LIVE_ENGINE`, default `openrouter`):
+- `openrouter`: `openai/gpt-audio-mini` (`VOICE_LIVE_MODEL`) through chat
+  completions with `modalities: [text, audio]`, `stream: true`, `pcm16`. The
+  person's turn goes in as audio, the reply streams back as audio, tool calls
+  work. Turn-taking is ours (`turn.py`); the person's words are
+  transcribed beside it by `VOICE_LIVE_STT_MODEL` for captions, history and
+  the transcript, never on the reply's critical path. Measured 2026-10-24 on
+  h with the full prompt: smart-turn ends a turn about 220 ms into the
+  silence, the model's first audio comes 0.8 to 0.9 s after the request, so
+  the person hears a reply 1.0 to 1.2 s after they stop. A barge-in flush
+  lands about 470 ms after they start talking over it. Cost: there is no
+  prompt caching on this model through OpenRouter, so every model call pays
+  for the whole prompt (about 3,250 tokens with the brief and tool schemas,
+  $0.002). A plain turn is about $0.002, a tool turn (two calls) about $0.005.
+- While a tool runs the reply opens with a cached filler ("One sec.") in the
+  call's voice, generated once per voice into
+  `~/.local/share/voice-live/fillers/<voice>/` and kept only if the model said
+  exactly the line.
+- `xai` (`grok-voice-latest`, needs `XAI_API_KEY`) and `openai`
+  (`gpt-realtime-mini`, needs `OPENAI_API_KEY`): the OpenAI Realtime WebSocket
+  protocol, relayed by `realtime.py`. The provider does turn detection and
+  barge-in; we inject the prompt and tools and run the tools.
+
+Client protocol (the contract the web page and the native apps speak; the
+public face is g-command-web's `wss://<command host>/api/voice/live`, which
+checks the `gcommand_auth` cookie and relays frames to `ws://127.0.0.1:8077/live`):
+- Audio both ways is binary frames of PCM16 little-endian mono at 24 kHz. Mic
+  chunks of 20 to 100 ms; the client applies echo cancellation (browser
+  `echoCancellation`, Apple voice processing), the server never sees the
+  speaker signal.
+- Client to server, text frames:
+  - `{"type":"hello","client":"web|ios|mac","session":"talk|app","voice"?,"greet"?}` first.
+    `session` picks the shared history and transcript (`talk` for the web page,
+    `app` so a call from the app lands in the app chat, `bench` for
+    `live_bench.py` and automated tests: its own history and transcript, and
+    only the tools that read). `greet` (default true) makes the Voice speak first.
+  - `{"type":"played","id":n,"ms":N,"done":bool}`: how much of reply `n` the
+    client has actually played. Sent about every 250 ms while playing, on
+    `flush` and when playback drains (`done`), so the server knows when the
+    reply ended and a cut-off reply is remembered only as far as it was heard.
+  - `{"type":"interrupt"}`: the person tapped to stop the Voice.
+  - `{"type":"mute","on":bool}`: a muted mic counts as silence.
+  - `{"type":"say","text":"..."}`: a typed turn in the middle of a call.
+  - `{"type":"bye"}`.
+- Server to client, text frames:
+  - `{"type":"ready","engine","model","voice","rate":24000}` after hello.
+  - `{"type":"state","state":"listening|hearing|thinking|speaking"}`.
+  - `{"type":"reply","id":n}` before the audio of reply `n`; binary audio
+    follows; `{"type":"reply_done","id":n}` after its last frame.
+  - `{"type":"flush","id":n}`: drop every buffered sample of reply `n` now
+    (barge-in). No audio of `n` follows it, and no `reply_done`: the flush ends it.
+  - `{"type":"user","text","turn":k}`: what the person said, once transcribed.
+  - `{"type":"assistant","id":n,"text","final":bool}`: the reply's words,
+    deltas then a final.
+  - `{"type":"tool","name","status":"start|done"}`.
+  - `{"type":"metrics","id":n,"eos_ms","ttfa_ms","cost"}`: end of speech to
+    first audio sent, model request to first audio, OpenRouter cost.
+  - `{"type":"error","message"}`; a fatal one is followed by close.
+
+Measuring it: `python -m voice.live_bench` calls `/live` as `bench` with
+Kokoro-rendered speech in real time and reports end of speech to first audio,
+barge-in flush time, captions and cost per turn. It is the sensor for the
+`voice` charter's gates in g-levels (turn latency, barge-in, cost, spoken
+register); `tests/test_voice_turn.py`, `test_voice_live.py` and
+`test_voice_realtime.py` are the every-run turn-taking gate.
+
 ## Files
 - `app.py`: webhook (GET verify / POST inbound) + `/health`; logs one journal
   line per inbound message (sender, text_len, media_count, not the full text)
@@ -95,6 +167,10 @@ MCP tools use.
   `(bytes, content_type)` or None. Telnyx is the BSP.
 - `prompt.py`: identity + the gate rule
 - `appchat.py`, `blocks.py`: the app session and its reply blocks (above)
+- `live.py`, `turn.py`, `realtime.py`, `live_bench.py`: the live call, its
+  endpointer (Silero VAD + smart-turn v3.2 on CPU, models sha256-pinned in
+  `~/.local/share/voice-live/`), the realtime-provider relay and its bench
+  (Live call, above)
 - `cli.py`: local tester (`python -m voice.cli`), no WhatsApp needed
 - `config.py`: all env; secrets arrive via `push-secrets` → `voice/.env`
 

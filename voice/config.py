@@ -63,6 +63,24 @@ GUESTS_OK = os.environ.get("VOICE_ALLOW_GUESTS", "").strip().lower() not in ("",
 MAX_TOOL_ITERATIONS = 10
 
 
+# --- live call (/live), see CLAUDE.md "Live call" ----------------------------
+# openrouter: our turn-taking + gpt-audio-mini speech to speech, on the key above.
+# xai / openai: their realtime WebSocket does the turn-taking, relayed by realtime.py.
+LIVE_ENGINE = os.environ.get("VOICE_LIVE_ENGINE", "openrouter")
+# Measured 2026-10-24 through OpenRouter: ~0.9 s request to first audio, ~$0.0007
+# a short turn. openai/gpt-audio was no faster, cost ~30x and invented a meeting.
+LIVE_MODEL = os.environ.get("VOICE_LIVE_MODEL", "openai/gpt-audio-mini")
+LIVE_VOICE = os.environ.get("VOICE_LIVE_VOICE", "marin")
+# Transcribes the person's turn beside the reply, for captions and history only.
+# Same day: gemini-3.1-flash-lite 1.4 s and $0.0001 a turn, verbatim on the test
+# clip; voxtral-small was faster (1.0 s) but 4x the price.
+LIVE_STT_MODEL = os.environ.get("VOICE_LIVE_STT_MODEL", "google/gemini-3.1-flash-lite")
+XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+LIVE_XAI_MODEL = os.environ.get("VOICE_LIVE_XAI_MODEL", "grok-voice-latest")
+LIVE_OPENAI_MODEL = os.environ.get("VOICE_LIVE_OPENAI_MODEL", "gpt-realtime-mini")
+
+
 def missing(keys):
     """Return the subset of env keys that are unset, used for a clear /health."""
     return [k for k in keys if not os.environ.get(k)]
