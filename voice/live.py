@@ -427,7 +427,7 @@ class Call:
             if ev.get("done"):
                 p.playback_done = True
                 p.ended.set()
-                if p is r and not r.generating() and not self.ep.in_speech:
+                if p is r and not r.generating() and not self.ep.in_speech and not r.hangup:
                     await self.set_state("listening")
         elif kind == "interrupt":
             if r and (r.audible() or r.generating()):

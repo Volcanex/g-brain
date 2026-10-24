@@ -1023,6 +1023,7 @@ def test_goodbye_hangs_up_once_it_has_played(live_env):
             assert not ws.events("end")
             ws.control(type="played", id=1, ms=20, done=True)
             await until(lambda: ws.events("end"))
+            assert ws.events("state")[-1]["state"] == "speaking"
             assert ws.client_state == live.WebSocketState.DISCONNECTED
             assert ws.events("end") == [{"type": "end", "reason": "goodbye"}]
             assert [e for e in ws.sent if isinstance(e, bytes)] == [b"\x01\x00" * 480]
