@@ -241,7 +241,18 @@ def _check_via_health(dep, health_cache):
     if not isinstance(c, dict) or "ok" not in c:
         return None
     detail = str(c.get("detail") or ("ok" if c["ok"] else "not ok"))
-    return ("up" if c["ok"] else "down", f"{detail} (via {h['service']}/health)")
+    via = f"(via {h['service']}/health)"
+    if not c["ok"]:
+        return ("down", f"{detail} {via}")
+    # A forwarded balance still answers to the catalog's own floor, so each provider has
+    # one warn line, the manifest's. The service owns the credentials and its own harder
+    # floor (ok false, so down). Before this, voice's $2 floor hid the manifest's $5 warn.
+    floor = (dep.get("probe") or {}).get("min")
+    balance = c.get("balance")
+    if (isinstance(balance, (int, float)) and not isinstance(balance, bool)
+            and isinstance(floor, (int, float)) and balance < floor):
+        return ("warn", f"balance {balance:.2f} below {float(floor):.2f} {via}")
+    return ("up", f"{detail} {via}")
 
 
 def probe_dependency(dep, repo_map, health_cache):
