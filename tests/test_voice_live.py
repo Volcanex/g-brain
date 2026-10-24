@@ -1241,6 +1241,22 @@ def test_talking_over_the_goodbye_keeps_the_call(live_env):
     asyncio.run(run())
 
 
+def test_stop_is_not_a_goodbye_so_end_call_keeps_the_call(live_env):
+    rounds = [SSE([tool_delta("end_call")], 0.0002), SSE([audio_delta("Sure.")], 0.0003)]
+
+    async def run():
+        async with live_env(rounds, stt="Okay, stop. That's enough.") as (live, call, ws, requests, written):
+            await feed(call, ws, turn_end())
+            await until(lambda: ws.events("reply_done"))
+            ws.control(type="played", id=1, ms=20, done=True)
+            await remembered(live, call)
+            assert not ws.events("end") and ws.client_state == live.WebSocketState.CONNECTED
+            assert ws.events("assistant")[-1]["text"] == "Sure."
+            last = [p for p in requests if p.get("stream")][-1]
+            assert "did not say goodbye" in last["messages"][-1]["content"]
+    asyncio.run(run())
+
+
 def test_goodbye_tool_without_words_plays_a_ready_goodbye(live_env, monkeypatch):
     rounds = [SSE([tool_delta("end_call")], 0.0002)]
 
