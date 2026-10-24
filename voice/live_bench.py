@@ -94,6 +94,7 @@ class Bench:
         self.cut_cost_known = False
         self.failure = None
         self.tasks = []
+        self.tape = None          # (time, pcm) as sent and as played, for --record
 
     async def control(self, **event):
         await self.ws.send(json.dumps(event))
@@ -113,7 +114,7 @@ class Bench:
                "eos_at": None, "first_audio_at": None, "received_bytes": 0,
                "buffer_bytes": 0, "played_bytes": 0, "reply_done": False,
                "playback_done": False, "flushed": False, "metrics": None, "metrics_events": 0,
-               "reply_text": "", "user_text": ""}
+               "reply_text": "", "user_text": "", "audio": bytearray()}
         self.rows.append(row)
         self.pending = row
         return row
@@ -130,6 +131,8 @@ class Bench:
                         row["first_audio_at"] = now
                     row["received_bytes"] += len(raw)
                     row["buffer_bytes"] += len(raw)
+                    if self.tape is not None:
+                        row["audio"] += raw
                 else:
                     ev = json.loads(raw)
                     kind = ev.get("type")
@@ -214,6 +217,8 @@ class Bench:
                     row["onset_at"] = time.perf_counter()
                 frame = pcm[offset:offset + FRAME_BYTES]
                 frame = frame.ljust(FRAME_BYTES, b"\x00")
+                if self.tape is not None:
+                    self.tape.append((time.perf_counter(), frame))
             await self.ws.send(frame)
             if current is not None:
                 offset += FRAME_BYTES
@@ -238,6 +243,9 @@ class Bench:
             row = self.active
             if row is not None and not row["playback_done"]:
                 take = min(row["buffer_bytes"], int((now - last) * RATE) * 2)
+                if self.tape is not None and take:
+                    start = row["played_bytes"]
+                    self.tape.append((last, bytes(row["audio"][start:start + take])))
                 row["buffer_bytes"] -= take
                 row["played_bytes"] += take
                 if row["reply_done"] and row["buffer_bytes"] == 0:
@@ -398,7 +406,30 @@ async def run_bench(args, *, http=None, gap=0.6):
     else:
         utterances = [(text, await render(text, args.cache, http)) for text in texts]
     async with connect(args.url, max_size=None, proxy=None, open_timeout=10) as ws:
-        return await Bench(ws).run(utterances, args.voice, gap)
+        bench = Bench(ws)
+        if getattr(args, "record", None):
+            bench.tape = []
+        report = await bench.run(utterances, args.voice, gap)
+    if bench.tape is not None:
+        write_tape(bench.tape, args.record)
+    return report
+
+
+def write_tape(tape, path):
+    """The call as a listener beside the speaker hears it: each utterance when it was
+    sent and each reply as far as it played, so a cut reply stops where it was cut."""
+    import numpy as np
+    t0 = min(t for t, _ in tape)
+    end = max(int((t - t0) * RATE) + len(pcm) // 2 for t, pcm in tape)
+    mix = np.zeros(end, dtype=np.int32)
+    for t, pcm in tape:
+        at = int((t - t0) * RATE)
+        mix[at:at + len(pcm) // 2] += np.frombuffer(pcm, dtype="<i2")
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(RATE)
+        wav.writeframes(np.clip(mix, -32768, 32767).astype("<i2").tobytes())
 
 
 async def selftest(args):
@@ -505,6 +536,7 @@ def parser():
     p.add_argument("--voice", default="marin")
     p.add_argument("--cache", default="/tmp/live-bench-cache")
     p.add_argument("--json", type=Path)
+    p.add_argument("--record", type=Path, metavar="WAV", help="write the call as heard to a WAV")
     p.add_argument("--max-eos-p50", type=float, default=1500)
     p.add_argument("--max-eos-p90", type=float, default=2500)
     p.add_argument("--max-flush-ms", type=float, default=800)

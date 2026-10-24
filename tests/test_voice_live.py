@@ -3,6 +3,7 @@ import asyncio
 import base64
 import io
 import json
+import struct
 import wave
 from collections import deque
 from contextlib import asynccontextmanager
@@ -372,7 +373,13 @@ def test_heard(played, audio, expected):
 def test_bench_selftest_and_threshold_exit_codes(tmp_path, capsys, flags, expected, failed):
     from voice import live_bench
     output = tmp_path / "bench.json"
-    assert live_bench.main(["--selftest", "--turns", "1", "--json", str(output), *flags]) == expected
+    tape = tmp_path / "call.wav"
+    assert live_bench.main(["--selftest", "--turns", "1", "--json", str(output), "--record", str(tape),
+                            *flags]) == expected
+    with wave.open(str(tape)) as wav:
+        assert wav.getframerate() == live_bench.RATE
+        samples = struct.unpack(f"<{wav.getnframes()}h", wav.readframes(wav.getnframes()))
+    assert 1000 in samples, "the first utterance is missing from the recording"
     report = json.loads(output.read_text())
     assert report["passed"] == (expected == 0)
     assert all(not report["checks"][key] for key in failed)
