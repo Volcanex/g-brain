@@ -99,7 +99,16 @@ Engines (`VOICE_LIVE_ENGINE`, default `openrouter`):
 - While a tool runs the reply opens with a cached filler ("One sec.") in the
   call's voice, generated once per voice into
   `~/.local/share/voice-live/fillers/<voice>/` and kept only if the model said
-  exactly the line.
+  exactly the line. No filler when the model already said something before
+  the tool call ("Let me check").
+- What the model is handed is shaped for speech, because rules in the prompt
+  alone did not hold on gpt-audio-mini: the time comes ready-said
+  (`spoken_time`, "twenty to midnight"), a short system note right before each
+  turn repeats it and the stop rule (the shared history holds old calls whose
+  times it otherwise copies), and `list_todos` returns a digest
+  (`_todo_digest`: totals, three to say, the rest only if asked, due dates as
+  "overdue since the 10th of October"). Putting the call rules first in the
+  system prompt made it skip the tool and invent todos, so they stay last.
 - `xai` (`grok-voice-latest`, needs `XAI_API_KEY`) and `openai`
   (`gpt-realtime-mini`, needs `OPENAI_API_KEY`): the OpenAI Realtime WebSocket
   protocol, relayed by `realtime.py`. The provider does turn detection and
@@ -116,8 +125,8 @@ checks the `gcommand_auth` cookie and relays frames to `ws://127.0.0.1:8077/live
   - `{"type":"hello","client":"web|ios|mac","session":"talk|app","voice"?,"greet"?}` first.
     `session` picks the shared history and transcript (`talk` for the web page,
     `app` so a call from the app lands in the app chat, `bench` for
-    `live_bench.py` and automated tests: its own history and transcript, and
-    only the tools that read). `greet` (default true) makes the Voice speak first.
+    `live_bench.py` and automated tests: its own transcript, only the tools
+    that read, and history emptied at the start of every call so runs compare). `greet` (default true) makes the Voice speak first.
   - `{"type":"played","id":n,"ms":N,"done":bool}`: how much of reply `n` the
     client has actually played. Sent about every 250 ms while playing, on
     `flush` and when playback drains (`done`), so the server knows when the
@@ -135,15 +144,22 @@ checks the `gcommand_auth` cookie and relays frames to `ws://127.0.0.1:8077/live
     (barge-in). No audio of `n` follows it, and no `reply_done`: the flush ends it.
   - `{"type":"user","text","turn":k}`: what the person said, once transcribed.
   - `{"type":"assistant","id":n,"text","final":bool}`: the reply's words,
-    deltas then a final.
+    deltas then a final. Words can come before the `reply` event. A reply cut
+    while it was still generating gets as its final only what was heard
+    (what the history keeps), up to 0.6 s after the flush, so it can land
+    after the next reply began: key captions by id.
   - `{"type":"tool","name","status":"start|done"}`.
   - `{"type":"metrics","id":n,"eos_ms","ttfa_ms","cost"}`: end of speech to
-    first audio sent, model request to first audio, OpenRouter cost.
+    first audio sent, model request to first audio, OpenRouter cost. A cut
+    reply's stream never reports usage, so its cost is looked up from
+    OpenRouter's generation stats (they appear 5 to 20 s late) and a second
+    `metrics` for the same id replaces the first.
   - `{"type":"error","message"}`; a fatal one is followed by close.
 
 Measuring it: `python -m voice.live_bench` calls `/live` as `bench` with
 Kokoro-rendered speech in real time and reports end of speech to first audio,
-barge-in flush time, captions and cost per turn. It is the sensor for the
+barge-in flush time, captions and cost per turn (about $0.015 a run;
+`--selftest` is free, `--record call.wav` saves the call as heard). It is the sensor for the
 `voice` charter's gates in g-levels (turn latency, barge-in, cost, spoken
 register); `tests/test_voice_turn.py`, `test_voice_live.py` and
 `test_voice_realtime.py` are the every-run turn-taking gate.
