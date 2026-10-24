@@ -14,12 +14,43 @@ import g_config
 WINDOW = 6 * 3600
 MAX_ATTEMPTS = 2
 WRAPPER = "/usr/local/sbin/g-reflex"
+# du walks every file, so the disk report runs at the cleanup cadence, not every probe.
+REPORT_EVERY = 6 * 3600
+REPORT_KEEP = 8          # two days of reports at that cadence, enough to see a day's growth
+REPORT_GROWTH = 100 * 1024 ** 2
+REPORT_TOP = 10
 
 
 def _disk(usage):
     # As df reports it: blocks reserved for root are not space the services can use.
     return {"used_pct": round(100 * usage.used / (usage.used + usage.free), 1),
             "free_gb": round(usage.free / 1024 ** 3, 2)}
+
+
+def size(n):
+    return f"{n / 1024 ** 3:.1f} GB" if abs(n) >= 1024 ** 3 else f"{n / 1024 ** 2:.0f} MB"
+
+
+def _leaves(rows, key):
+    """Drop a path when one directory under it carries most of its number, so the
+    list names the tree that actually holds or grew the data, not each parent of it."""
+    keep = []
+    for row in rows:
+        inside = [r for r in rows if r["path"].startswith(row["path"].rstrip("/") + "/")]
+        if not any(r[key] >= 0.8 * row[key] for r in inside):
+            keep.append(row)
+    return sorted(keep, key=lambda r: -r[key])[:REPORT_TOP]
+
+
+def _growers(reports):
+    """Paths that grew between the oldest kept report and the newest, fastest first."""
+    if len(reports) < 2:
+        return []
+    first, last = reports[0], reports[-1]
+    hours = round((last["ts"] - first["ts"]) / 3600, 1)
+    rows = [{"path": p, "grew": n - first["sizes"][p], "hours": hours}
+            for p, n in last["sizes"].items() if p in first["sizes"]]
+    return _leaves([r for r in rows if r["grew"] >= REPORT_GROWTH], "grew")
 
 
 def _unit(name):
@@ -108,6 +139,49 @@ class Reflexes:
         self._record("clean-disk", "/", before, after,
                      f"freed {freed} bytes; {action['detail']}")
         return after
+
+    def disk_report(self, disk):
+        """What holds the disk and what grew, while it stays over the cleanup line.
+
+        Read-only: the wrapper runs du as root and prints {path: bytes}. A short
+        history sits beside the snapshot in `disk-usage.json`, so growth is measured
+        rather than guessed, and the vault syncs it, so an agent off the host can read
+        it too. Returns the fastest growers for the page."""
+        if disk["used_pct"] < 85:
+            return []
+        path = self.directory / "disk-usage.json"
+        try:
+            data = json.loads(path.read_text())
+            reports = [r for r in data.get("reports", [])
+                       if type(r.get("ts")) in (int, float) and isinstance(r.get("sizes"), dict)]
+        except (OSError, ValueError, AttributeError):
+            data, reports = {}, []
+        now = time.time()
+        last = max([r["ts"] for r in reports] + [data.get("attempted") or 0])
+        if now - last < REPORT_EVERY:
+            return data.get("growers", [])
+        data["attempted"] = now
+        try:
+            out = subprocess.run(["sudo", "-n", WRAPPER, "disk-report"],
+                                 capture_output=True, text=True, timeout=300)
+            sizes = json.loads(out.stdout)
+            if not isinstance(sizes, dict) or not sizes:
+                raise ValueError((out.stderr or out.stdout).strip() or f"exit {out.returncode}")
+            reports = (reports + [{"ts": now, "sizes": sizes}])[-REPORT_KEEP:]
+            largest = [{"path": p, "bytes": n} for p, n in sizes.items()]
+            data.update(checked_at=datetime.now(timezone.utc).isoformat(), disk=disk, error=None,
+                        largest=_leaves(largest, "bytes"), growers=_growers(reports), reports=reports)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            # Kept, with the attempt time, so a broken wrapper is not retried every probe.
+            data["error"] = f"disk report unavailable: {exc}"[:300]
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
+            tmp.replace(path)
+        except OSError as exc:
+            print(f"disk report not saved: {exc}", file=sys.stderr)
+        return data.get("growers", [])
 
     def repair_services(self, results, services, hosts, probe, local, check_unit):
         by_id = {svc["id"]: svc for svc in services}

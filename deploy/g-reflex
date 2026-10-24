@@ -1,5 +1,6 @@
 #!/usr/bin/python3 -I
 """Root-only remedies allowed to the status watcher by sudoers."""
+import json
 import os
 import re
 import shutil
@@ -15,11 +16,15 @@ PIP_CACHES = [Path("/root/.cache/pip"), Path("/home/gabriel/.cache/pip")]
 # Claude scratch: /tmp/claude-<uid>/<project>/<session>. Live sessions sit beside
 # stale ones, so age is judged per entry by its newest file, never by a dir's mtime.
 SCRATCH_ROOT, SCRATCH_DAYS, SCRATCH_DEPTH = Path("/tmp"), 7, 2
+# The disk report: du over the trees where data lives, on the root filesystem only,
+# three levels down, entries of 100 MB or more. It reads and never removes.
+REPORT_ROOTS = [Path(p) for p in ("/home", "/root", "/var", "/opt", "/srv", "/tmp", "/usr/local")]
+REPORT_DEPTH, REPORT_MIN, REPORT_SECONDS = 3, 100 * 1024 ** 2, 240
 
 
-def _run(cmd):
+def _run(cmd, timeout=30):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"{cmd[0]}: {exc}", file=sys.stderr)
         return None
@@ -75,15 +80,41 @@ def _clean_disk():
     return 0
 
 
+def _disk_report():
+    root = os.stat("/").st_dev
+    roots = [str(p) for p in REPORT_ROOTS
+             if p.is_dir() and not p.is_symlink() and p.stat().st_dev == root]
+    cmd = ["du", "-x", "-B1", f"--max-depth={REPORT_DEPTH}", *roots]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=REPORT_SECONDS).stdout
+    except subprocess.TimeoutExpired as exc:
+        # du prints each tree as it finishes, so what came out before the cut is exact.
+        out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout or ""
+        print(f"du: stopped after {REPORT_SECONDS}s, report is partial", file=sys.stderr)
+    except OSError as exc:
+        print(f"du: {exc}", file=sys.stderr)
+        out = ""
+    sizes = {}
+    for line in out.splitlines():
+        size, _, path = line.partition("\t")
+        if size.isdigit() and int(size) >= REPORT_MIN:
+            sizes[path] = int(size)
+    print(json.dumps(sizes, sort_keys=True))
+    return 0 if sizes else 1
+
+
 def main(args=None):
     args = sys.argv[1:] if args is None else args
     if args == ["clean-disk"]:
         return _clean_disk()
+    if args == ["disk-report"]:
+        return _disk_report()
     if args == ["restart", "basic-memory"]:
         out = _run(["systemctl", "restart", "basic-memory.service"])
         return out.returncode if out else 1
     if len(args) != 2 or args[0] != "start":
-        print("allowed: start <enabled service>, restart basic-memory, clean-disk", file=sys.stderr)
+        print("allowed: start <enabled service>, restart basic-memory, clean-disk, disk-report",
+              file=sys.stderr)
         return 1
     unit = args[1]
     if not re.fullmatch(r"[A-Za-z0-9@._-]+", unit) or unit.startswith("-"):

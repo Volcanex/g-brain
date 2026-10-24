@@ -15,6 +15,10 @@ topic, and no code here knows about them.
   and writes `status/snapshot.json` in the vault.
 - `reflexes.py`: starts dead local units, restarts a stale search index and cleans the root
   disk. Keeps attempts in `status/reflexes.json` and actions in `status/reflex-log.jsonl`.
+  While the disk stays over the cleanup line it also writes `status/disk-usage.json`: the
+  wrapper's `disk-report` (du as root, read-only) at most every six hours, the largest trees,
+  and what grew across the last two days of reports. The vault syncs that file, so the
+  growth can be read off the host, and the disk page names the top three growers.
 - `unit_alert.py`: the `OnFailure=g-alert@%n.service` hook. One alert per failed unit, with
   the journal tail attached.
 - `../deploy/`: `g-reflex` is the root wrapper and `g-reflex.sudoers` grants the watcher
@@ -36,6 +40,8 @@ Fix, verify, then page only if the fix failed. Only inactive or failed local uni
 started, and the wrapper requires them to be enabled. Search restarts are verified on the
 next timer run. Each remedy gets at most two attempts per target in six hours. A healed
 service never pages. Disk cleanup starts at 85 percent used and pages if 90 percent remains.
+The wrapper must be reinstalled in `/usr/local/sbin` for a new verb such as `disk-report`.
+Until it is, the old copy refuses the verb and `disk-usage.json` holds that error.
 
 More on dedup, tiers and the dependency catalog: "Alerting & dependencies (the spine)" in
 the root `CLAUDE.md`.
