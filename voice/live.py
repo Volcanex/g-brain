@@ -75,6 +75,7 @@ GOODBYE_WORDS = re.compile(
 # For a goodbye given as a bare end_call: a second model call only to say "Bye."
 # took most of a second.
 GOODBYES = ("Bye.", "Speak soon.", "See you.")
+ACKS = ("Okay.", "Sure.", "Got it.")   # a refused hang-up said nothing: one of these, not a second request
 END_CALL = {"type": "function", "function": {
     "name": "end_call",
     "description": ("Hang up the call. Only when they say goodbye or that they're done with the "
@@ -599,9 +600,9 @@ class Call:
             work = [c for c in calls if c["function"]["name"] != "end_call"]
             if len(work) < len(calls) and GOODBYE_WORDS.search(await self.user_text(r, GOODBYE_WAIT_S)):
                 r.hangup = True
-                if not work and (said.strip() or await self.say_goodbye(r)):
+                if not work and (said.strip() or await self.say_ready(r, GOODBYES)):
                     return                    # the goodbye is said: hang up once it has played
-            elif len(work) < len(calls) and not work and said.strip():
+            elif len(work) < len(calls) and not work and (said.strip() or await self.say_ready(r, ACKS)):
                 return                        # not a goodbye: it answered, and the call stays up
             if not calls:
                 return
@@ -940,8 +941,8 @@ class Call:
         with open(self.line_path(line), "rb") as f:
             return line, f.read()
 
-    async def say_goodbye(self, r: Reply) -> bool:
-        ready = [g for g in GOODBYES if os.path.exists(self.line_path(g))]
+    async def say_ready(self, r: Reply, lines) -> bool:
+        ready = [g for g in lines if os.path.exists(self.line_path(g))]
         if not ready:
             return False
         line = random.choice(ready)
@@ -957,7 +958,7 @@ class Call:
         Until a line is ready the model says it."""
         now = greeting_band(datetime.datetime.now(ZoneInfo("Europe/London")).hour)
         bands = sorted(GREETINGS, key=lambda b: b != now)
-        lines = [g for b in bands for g in self.greeting_lines(b)] + list(GOODBYES)
+        lines = [g for b in bands for g in self.greeting_lines(b)] + list(GOODBYES) + list(ACKS)
         for line in dict.fromkeys(lines):
             path = self.line_path(line)
             if os.path.exists(path):

@@ -111,6 +111,7 @@ def live_env(monkeypatch, tmp_path):
     monkeypatch.setattr(live, "FILLER_DIR", str(tmp_path / "fillers"))
     monkeypatch.setattr(live, "GREETINGS", {})
     monkeypatch.setattr(live, "GOODBYES", ())
+    monkeypatch.setattr(live, "ACKS", ())
     monkeypatch.setattr(live, "_LAST_GREETING", {})
     monkeypatch.setattr(live.config, "LIVE_ENGINE", "openrouter")
     written = []
@@ -1151,6 +1152,26 @@ def test_stop_is_not_a_goodbye_so_end_call_keeps_the_call(live_env):
             assert ws.events("assistant")[-1]["text"] == "Sure."
             last = [p for p in requests if p.get("stream")][-1]
             assert "not a goodbye" in last["messages"][-1]["content"]
+    asyncio.run(run())
+
+
+def test_refused_hang_up_plays_a_ready_ack_without_a_second_request(live_env, monkeypatch):
+    rounds = [SSE([tool_delta("end_call")], 0.0002)]
+
+    async def run():
+        from voice import live
+        monkeypatch.setattr(live, "ACKS", ("Okay.",))
+        key = hashlib.sha1(b"Okay.").hexdigest()[:12]
+        open(os.path.join(live.FILLER_DIR, "marin", f"line-{key}.pcm"), "wb").write(b"\x05\x00" * 240)
+        async with live_env(rounds, stt="Okay, stop. That's enough.") as (live, call, ws, requests, written):
+            await feed(call, ws, turn_end())
+            await until(lambda: ws.events("reply_done"))
+            ws.control(type="played", id=1, ms=10, done=True)
+            await remembered(live, call)
+            assert not ws.events("end") and ws.client_state == live.WebSocketState.CONNECTED
+            assert [e for e in ws.sent if isinstance(e, bytes)] == [b"\x05\x00" * 240]
+            assert len([p for p in requests if p.get("stream")]) == 1
+            assert ws.events("assistant")[-1]["text"] == "Okay."
     asyncio.run(run())
 
 
