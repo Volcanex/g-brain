@@ -1,7 +1,7 @@
 """Changing Gabriel's todos and calendar from chat.
 
 The calendar IS the dated brain todos, so one set of tools covers both. Every
-write goes through `brain_todos._update`, the function behind the brain's REST
+write goes through `brain_todos.update`, the function behind the brain's REST
 `PATCH /api/todos/<slug>` that the dash panels and the web Day view reach through
 G-Command's /api/brain proxy. Voice calls it in-process, like `list_todos`; there
 is no second path. The field meanings are the Day view's: star = `urgent`, drop =
@@ -123,7 +123,7 @@ def find(target):
     t = (target or "").strip()
     if not t:
         return None, {"error": "say which todo"}
-    slug = brain_todos._resolve_slug(t)
+    slug = brain_todos.resolve_slug(t)
     items = _all()
     for it in items:
         if it["slug"] == slug:
@@ -204,7 +204,7 @@ def _apply(target, fields, title):
     if err:
         return err
     try:
-        return _changed(brain_todos._update(it["slug"], fields), title)
+        return _changed(brain_todos.update(it["slug"], fields), title)
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
 
@@ -255,7 +255,7 @@ def update_todo(target, title=None, date=None, time=None, priority=None, starred
     if not fields:
         return {"error": "nothing to change"}
     try:
-        return _changed(brain_todos._update(it["slug"], fields))
+        return _changed(brain_todos.update(it["slug"], fields))
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
 

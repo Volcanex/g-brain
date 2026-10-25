@@ -539,6 +539,15 @@ def get(slug):
     return _load(slug)
 
 
+def update(slug, fields):
+    """Patch a todo's fields under the store lock, as the REST PATCH does."""
+    return _update(slug, fields)
+
+
+def resolve_slug(permalink_or_slug):
+    return _resolve_slug(permalink_or_slug)
+
+
 def _by_source_key(source_key):
     if source_key:
         for slug, post in iter_todos():
