@@ -125,8 +125,9 @@ def live_env(monkeypatch, tmp_path):
 
     @asynccontextmanager
     async def session(streams=None, *, greet=False, sender="talk", stt="What is due?", handler=None,
-                      stt_gate=None, endpoint=None):
+                      stt_gate=None, endpoint=None, stt_errors=0):
         requests = []
+        failures = [stt_errors]
         rounds = deque(streams or [SSE([audio_delta()], 0.0007)])
 
         async def respond(request):
@@ -135,6 +136,9 @@ def live_env(monkeypatch, tmp_path):
             if payload["messages"][0]["content"] == live.STT_PROMPT:
                 if stt_gate is not None:
                     await stt_gate.wait()
+                if failures[0]:
+                    failures[0] -= 1
+                    return httpx.Response(502, json={"error": {"message": "upstream"}})
                 return httpx.Response(200, json={"choices": [{"message": {"content": stt}}],
                                                 "usage": {"cost": 0.0001}})
             if handler:
@@ -1244,6 +1248,16 @@ def test_talking_over_the_goodbye_keeps_the_call(live_env):
             await asyncio.sleep(0.05)
             assert not ws.events("end")
             assert ws.client_state == live.WebSocketState.CONNECTED
+    asyncio.run(run())
+
+
+def test_a_failed_transcription_is_tried_again(live_env):
+    async def run():
+        async with live_env(stt="What is due?", stt_errors=1) as (live, call, ws, requests, written):
+            await feed(call, ws, turn_end())
+            await until(lambda: ws.events("user"))
+            assert ws.events("user")[-1]["text"] == "What is due?"
+            assert len([p for p in requests if p["messages"][0]["content"] == live.STT_PROMPT]) == 2
     asyncio.run(run())
 
 

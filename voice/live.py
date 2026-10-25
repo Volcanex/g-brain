@@ -59,6 +59,7 @@ ECHO_LEARN_HOLD_MS = 300   # hold through VAD's 300 ms confirmation; similar vow
 RATE_REPLIES = 40          # per minute per session: a reply heard back through the
 RATE_WINDOW = 60.0         # speakers can loop, and every reply costs a model call
 STT_WAIT_S = 6.0
+STT_TRIES = 2              # an OpenRouter error body once left a turn with no caption
 GOODBYE_WAIT_S = 2.0       # end_call waits this long for the transcript; 6 s held a "stop" turn 9 s
 ACK_WAIT_S = 0.6           # for the client's playhead after a flush
 MAX_TURN_S = 120           # one turn sent to the model holds at most this much audio
@@ -991,14 +992,20 @@ class Call:
         payload = {"model": config.LIVE_STT_MODEL, "temperature": 0, "max_tokens": 400,
                    "messages": [{"role": "system", "content": STT_PROMPT}, _audio_message(r.pcm)],
                    "usage": {"include": True}}
-        try:
-            resp = await self.http.post(config.OPENROUTER_URL, headers=_headers(), json=payload)
-            j = resp.json()
-            self.charge(r, j.get("usage"))
-            text = " ".join(((j.get("choices") or [{}])[0].get("message") or {}).get("content", "").split())
-        except Exception as e:
-            log.warning("live stt failed: %s: %s", type(e).__name__, e)
-            return ""
+        text = ""
+        for _ in range(STT_TRIES):
+            try:
+                resp = await self.http.post(config.OPENROUTER_URL, headers=_headers(), json=payload)
+                j = resp.json()
+                self.charge(r, j.get("usage"))
+                if resp.is_success and j.get("choices"):
+                    text = " ".join(((j["choices"][0].get("message") or {}).get("content") or "").split())
+                    break
+                log.warning("live stt failed: HTTP %s %s", resp.status_code, str(j.get("error") or "")[:200])
+            except Exception as e:
+                log.warning("live stt failed: %s: %s", type(e).__name__, e)
+            if r.discard:
+                break
         if text and not r.discard:
             await self.send({"type": "user", "text": text, "turn": r.turn})
         return text
