@@ -156,7 +156,7 @@ def _resample(audio: np.ndarray, rate: int) -> np.ndarray:
 class Endpointer:
     def __init__(self, rate=24000, *, fast_silence_ms=200, retry_silence_ms=600,
                  max_silence_ms=1400, threshold=0.5, min_speech_ms=120,
-                 confirm_speech_ms=300, preroll_ms=300):
+                 confirm_speech_ms=300, preroll_ms=300, frame_filter=None):
         if not isinstance(rate, int) or rate <= 0:
             raise ValueError("rate must be a positive integer")
         if not 0 < fast_silence_ms <= retry_silence_ms <= max_silence_ms:
@@ -166,6 +166,7 @@ class Endpointer:
         if not 0 <= threshold <= 1:
             raise ValueError("threshold must be between zero and one")
         self.rate = rate
+        self.frame_filter = frame_filter
         self.fast_silence_ms = fast_silence_ms
         self.retry_silence_ms = retry_silence_ms
         self.max_silence_ms = max_silence_ms
@@ -283,6 +284,8 @@ class Endpointer:
             if offset + size > len(data):
                 break
             frame = data[offset:offset + size]
+            if self.frame_filter is not None:
+                frame = self.frame_filter(frame)
             source = np.frombuffer(frame, dtype="<i2").astype(np.float32) / 32768
             positions = ((self._frames * 512 + np.arange(512))
                          * (self.rate / 16000) - start)
