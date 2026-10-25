@@ -441,6 +441,8 @@ class Call:
         self.held: bytes = b""              # a turn whose reply had not started speaking yet
         self.held_eos: float | None = None
         self.muted = False
+        self.mic_bytes = 0                  # what the client sent, so a call that heard nothing says why
+        self.mic_peak = 0.0
         self.state = ""
         self.brief = ""
         self.fillers: list[bytes] = []
@@ -544,8 +546,10 @@ class Call:
             t.cancel()
         await asyncio.gather(*self.background, return_exceptions=True)
         await self.http.aclose()
-        log.info("live call sender=%s client=%s replies=%d cost=$%.4f duration_s=%d",
-                 self.sender, self.client, self.replies, self.cost, time.time() - self.started)
+        peak = 20 * np.log10(self.mic_peak) if self.mic_peak > 0 else float("-inf")
+        log.info("live call sender=%s client=%s replies=%d cost=$%.4f duration_s=%d mic_s=%.1f mic_peak_dbfs=%.0f",
+                 self.sender, self.client, self.replies, self.cost, time.time() - self.started,
+                 self.mic_bytes / BYTES_PER_MS / 1000, peak)
 
     def next_id(self) -> int:
         self.rid += 1
@@ -584,6 +588,11 @@ class Call:
                 await self.start(Reply(self.next_id(), self.turn, "text", text=text))
 
     async def on_audio(self, pcm: bytes):
+        if pcm:
+            self.mic_bytes += len(pcm)
+            frame = np.frombuffer(pcm[:len(pcm) // 2 * 2], "<i2").astype(np.float32)
+            if frame.size:
+                self.mic_peak = max(self.mic_peak, float(np.sqrt(np.mean(frame ** 2))) / 32768)
         if self.muted or not pcm:
             return
         for ev in await asyncio.to_thread(self.ep.feed, pcm):
