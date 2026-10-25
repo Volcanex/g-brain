@@ -75,6 +75,24 @@ def test_whats_on_today_shows_the_calendar_panel(app_turn, monkeypatch):
     assert agent._HISTORY["app"][-1] == {"role": "assistant", "content": done["reply"]}
 
 
+def test_the_reply_is_the_last_text_not_every_round_joined(app_turn, monkeypatch):
+    appchat, agent, _ = app_turn
+    _rounds(monkeypatch, appchat, [
+        [("text", "The calendar panel is below."), ("calls", [_call("show_panel", {"name": "calendar"})])],
+        [("text", "Three things today; the panel is below."), ("calls", [])],
+    ])
+    done = list(appchat.stream_turn("app", "what's on?"))[-1]
+    assert done["reply"] == "Three things today; the panel is below."
+    assert agent._HISTORY["app"][-1] == {"role": "assistant", "content": done["reply"]}
+
+    # Text before a tool call stays when nothing comes after it.
+    _rounds(monkeypatch, appchat, [
+        [("text", "Three things today."), ("calls", [_call("show_panel", {"name": "calendar"})])],
+        [("calls", [])],
+    ])
+    assert list(appchat.stream_turn("app", "what's on?"))[-1]["reply"] == "Three things today."
+
+
 def test_plain_chat_has_no_blocks(app_turn, monkeypatch):
     appchat, _, tdir = app_turn
     _rounds(monkeypatch, appchat, [[("text", "Morning."), ("calls", [])]])

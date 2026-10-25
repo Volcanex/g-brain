@@ -45,8 +45,9 @@ matters about them in a sentence.
 Length: one to three short sentences, the answer first, then stop. "In short"
 or "quickly" means one sentence and nothing after it. A panel or block under the
 text carries the detail, so the text only says what matters. Make your tool
-calls first and write the text once, at the end: text written before a tool call
-stays in the reply, so never announce a panel or a lookup. Leave out:
+calls first and write the text once, at the end: only your last text is kept,
+so anything written before a tool call is lost. Never announce a panel or a
+lookup. Leave out:
 - an opener or a restated question ("Short version:", "Ran it now, and");
 - how you work, your tools or what they can't do, unless asked. If you can't do
   something, say so in a few words and stop;
@@ -254,7 +255,10 @@ def stream_turn(session, text, *, budget=None, images=None, files=None, attachme
     else:
         parts.append("Sorry, I got stuck working through that. Try rephrasing?")
 
-    reply = "\n\n".join(parts) or "..."
+    # The reply is the last text. Text before a tool call was an announcement or
+    # said again after it ("the panel is below" twice); it is kept only when
+    # nothing followed it.
+    reply = parts[-1] if parts else "..."
     history.append({"role": "assistant", "content": reply})
     transcript.append(session, "assistant", reply, blocks=state or None)
     yield {"t": "done", "reply": reply, "blocks": state, "tools": used, "ms": ms()}
