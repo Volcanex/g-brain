@@ -30,6 +30,7 @@ from collections import deque
 from zoneinfo import ZoneInfo
 
 import httpx
+import numpy as np
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 from . import agent, config, talk, transcript
@@ -48,6 +49,13 @@ READ_TOOLS = {"brain_search", "brain_read", "recent_activity", "list_todos"}
 MAX_CALL_S = 60 * 60
 MAX_TOKENS = 1200          # ~20 audio tokens a second, so roughly a minute of speech
 MIN_TURN_MS = 250          # shorter "speech" is a cough or a click
+ECHO_LAG_MS = 512          # bench replay: 480 ms worst lag with a 250 ms playback stall, +32 ms VAD frame
+ECHO_LEAD_MS = 64          # one 32 ms VAD frame plus the bench's 20 ms playback scheduling quantum
+ECHO_DECIMATE = 4          # 6 kHz matching retains speech while bounding a lag search to ~3500 samples
+ECHO_CORRELATION = 0.85    # require >=72% explained power before treating a frame as an echo-only candidate
+ECHO_GAIN_FRAMES = 5       # five echo-only estimates (160 ms at 32 ms/frame) retain peaks across brief dips
+ECHO_MARGIN = 1.25         # replay's worst echo-only ratio was 1.023; 25% headroom preserves quiet barge-ins
+ECHO_LEARN_HOLD_MS = 300   # hold through VAD's 300 ms confirmation; similar vowels poisoned gain after 180 ms
 RATE_REPLIES = 40          # per minute per session: a reply heard back through the
 RATE_WINDOW = 60.0         # speakers can loop, and every reply costs a model call
 STT_WAIT_S = 6.0
@@ -317,12 +325,100 @@ class Reply:
         return self.generating() or time.time() < self.first_audio_at + self.audio_ms / 1000 + 0.3
 
 
+class EchoGuard:
+    """Adaptive double-talk detector; rejected echo becomes silence before VAD.
+
+    Match only to learn coupling from echo-only frames. The decision compares
+    mic RMS with the largest reference RMS in the playhead's jitter window.
+    The filter runs on the endpointer's existing frames, adding no buffering.
+    """
+
+    def __init__(self):
+        self.id = None
+        self.audio = bytearray()
+        self.ack_at = 0.
+        self.ack_ms = 0.
+        self.limit_ms = None
+        self.estimates = deque(maxlen=ECHO_GAIN_FRAMES)
+        self.gain = None
+        self.learn_after = 0.
+
+    def start(self, rid, now=None):
+        self.id = rid
+        self.audio = bytearray()
+        self.ack_at = time.monotonic() if now is None else now
+        self.ack_ms = 0.
+        self.limit_ms = None
+        self.learn_after = 0.
+
+    def append(self, pcm):
+        self.audio.extend(pcm)
+
+    def playhead(self, now):
+        return self.ack_ms + max(0., now - self.ack_at) * 1000
+
+    def played(self, rid, ms, done=False, now=None):
+        if rid != self.id or not np.isfinite(ms):
+            return
+        self.ack_at = time.monotonic() if now is None else now
+        self.ack_ms = max(0., min(ms, len(self.audio) / BYTES_PER_MS))
+        if done:
+            self.limit_ms = self.ack_ms
+
+    def stop(self, rid):
+        now = time.monotonic()
+        self.played(rid, self.playhead(now), done=True, now=now)
+
+    def filter(self, pcm, now=None, in_speech=False):
+        if self.id is None:
+            return pcm
+        now = time.monotonic() if now is None else now
+        head = self.playhead(now)
+        start = max(0, int((head - ECHO_LAG_MS) * RATE / 1000))
+        end = int((head + ECHO_LEAD_MS) * RATE / 1000)
+        if self.limit_ms is not None:
+            end = min(end, int(self.limit_ms * RATE / 1000))
+        raw = self.audio[start * 2:end * 2]
+        if len(raw) < len(pcm):
+            return pcm
+        # Block averages reduce aliasing and tolerate the client's low-pass AEC.
+        width = len(pcm) // 2 // ECHO_DECIMATE * ECHO_DECIMATE
+        if not width:
+            return pcm
+        mic = np.frombuffer(pcm, '<i2')[:width].astype(np.float32)
+        mic = mic.reshape(-1, ECHO_DECIMATE).mean(axis=1)
+        ref = np.frombuffer(raw, '<i2').astype(np.float32)
+        ref = ref[:len(ref) // ECHO_DECIMATE * ECHO_DECIMATE]
+        ref = ref.reshape(-1, ECHO_DECIMATE).mean(axis=1)
+        power = np.concatenate(([0.], np.cumsum(ref.astype(np.float64) ** 2)))
+        power = power[len(mic):] - power[:-len(mic)]
+        mic_power = float(np.dot(mic, mic))
+        if mic_power == 0 or not power.size or power.max() == 0:
+            return pcm
+        dots = np.correlate(ref, mic, 'valid')
+        correlations = np.abs(dots) / np.sqrt(np.maximum(power * mic_power, 1))
+        best = int(np.argmax(correlations))
+        # Once playback has stopped, only a waveform match can reject its tail;
+        # a quiet new speaker must not inherit the old reply's energy threshold.
+        if self.limit_ms is not None and correlations[best] < ECHO_CORRELATION:
+            return pcm
+        if correlations[best] >= ECHO_CORRELATION and not in_speech and now >= self.learn_after:
+            self.estimates.append(float(abs(dots[best]) / power[best]))
+            self.gain = max(self.estimates)
+        if self.gain is not None and mic_power <= ECHO_MARGIN ** 2 * self.gain ** 2 * power.max():
+            return bytes(len(pcm))
+        if self.gain is not None:
+            self.learn_after = now + ECHO_LEARN_HOLD_MS / 1000
+        return pcm
+
+
 class Call:
     """One call on the openrouter engine."""
 
     def __init__(self, ws: WebSocket, sender: str, voice: str, client: str):
         self.ws, self.sender, self.voice, self.client = ws, sender, voice, client
         self.ep = None
+        self.echo = EchoGuard()
         self.http = httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10))
         self.send_lock = asyncio.Lock()
         self.turn = 0
@@ -380,7 +476,9 @@ class Call:
     # --- the call --------------------------------------------------------------
     async def open(self):
         from . import turn                  # onnxruntime loads with the first call, not at import
-        self.ep = await asyncio.to_thread(turn.Endpointer, RATE)
+        self.ep = await asyncio.to_thread(
+            turn.Endpointer, RATE, frame_filter=lambda pcm: self.echo.filter(
+                pcm, in_speech=self.ep.in_speech))
 
     async def run(self, greet: bool):
         if self.sender == "bench":
@@ -448,6 +546,7 @@ class Call:
             if p is None:
                 return
             p.played_ms = float(ev.get("ms") or 0)
+            self.echo.played(p.id, p.played_ms, bool(ev.get("done")))
             if p.cut:
                 p.ack.set()
             if ev.get("done"):
@@ -536,6 +635,7 @@ class Call:
         if r.cut:
             return
         r.cut = True
+        self.echo.stop(r.id)
         r.ended.set()
         if r.started:
             r.cut_at = time.time()
@@ -687,10 +787,12 @@ class Call:
         if not r.started:
             r.started = True
             r.first_audio_at = time.time()
+            self.echo.start(r.id)
             self.held, self.held_eos = b"", None
             await self.send({"type": "reply", "id": r.id})
             await self.set_state("speaking")
         r.audio_ms += len(pcm) / BYTES_PER_MS
+        self.echo.append(pcm)
         await self.send_audio(pcm)
 
     async def play_filler(self, r: Reply):

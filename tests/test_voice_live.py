@@ -102,6 +102,7 @@ class SSE(httpx.AsyncByteStream):
 def live_env(monkeypatch, tmp_path):
     from voice import agent, live, talk, transcript, turn
 
+    endpointer = turn.Endpointer
     monkeypatch.setattr(turn, "Endpointer", ScriptedEndpointer)
     monkeypatch.setattr(agent, "_HISTORY", {})
     monkeypatch.setattr(live, "_RECENT", {})
@@ -122,7 +123,8 @@ def live_env(monkeypatch, tmp_path):
         (filler_dir / f"{i}.pcm").write_bytes(b"\x02\x00" * 240)
 
     @asynccontextmanager
-    async def session(streams=None, *, greet=False, sender="talk", stt="What is due?", handler=None, stt_gate=None):
+    async def session(streams=None, *, greet=False, sender="talk", stt="What is due?", handler=None,
+                      stt_gate=None, endpoint=None):
         requests = []
         rounds = deque(streams or [SSE([audio_delta()], 0.0007)])
 
@@ -144,6 +146,8 @@ def live_env(monkeypatch, tmp_path):
         call.http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         with monkeypatch.context() as patch:
             patch.setattr(live, "Call", lambda *args: call)
+            if endpoint is not None:
+                patch.setattr(turn, "Endpointer", endpoint)
             task = asyncio.create_task(live.serve(ws))
             ws.control(type="hello", client="test", session=sender, voice="marin", greet=greet)
             try:
@@ -155,6 +159,7 @@ def live_env(monkeypatch, tmp_path):
                 await asyncio.wait_for(task, 1.5)
                 await until(lambda: not call.background)
 
+    session.endpointer = endpointer
     return session
 
 
@@ -1273,4 +1278,146 @@ def test_goodbye_tool_without_words_plays_a_ready_goodbye(live_env, monkeypatch)
             assert [e for e in ws.sent if isinstance(e, bytes)] == [b"\x07\x00" * 240]
             assert len([p for p in requests if p.get("stream")]) == 1
             assert ws.events("assistant")[-1]["text"] == "Speak soon."
+    asyncio.run(run())
+
+
+def echo_source():
+    import numpy as np
+
+    rng = np.random.default_rng(41)
+    source = np.convolve(rng.normal(0, 9000, 24000 * 2), np.ones(8) / 8, "same")
+    return source.astype("<i2")
+
+
+@pytest.mark.parametrize("db", [-30, -20])
+@pytest.mark.parametrize("lag_ms", [-40, 60, 300])
+def test_echo_guard_rejects_echo_and_accepts_person(db, lag_ms):
+    import numpy as np
+    from voice.live import EchoGuard, RATE
+
+    guard = EchoGuard()
+    source = echo_source()
+    guard.start(1, now=0)
+    guard.append(source.tobytes())
+    guard.played(1, 750, now=.75)
+    end = int((1 - lag_ms / 1000) * RATE)
+    echo = (source[end - 768:end] * 10 ** (db / 20)).astype("<i2")
+    assert guard.filter(echo.tobytes(), now=1) == bytes(1536)
+    gain = guard.gain
+    person = np.random.default_rng(3).normal(0, 3000, 768)
+    mixed = np.clip(echo + person, -32768, 32767).astype("<i2").tobytes()
+    assert guard.filter(mixed, now=1) == mixed
+    assert guard.gain == gain, "double-talk must not train the echo coupling"
+
+
+def test_echo_guard_leaves_audio_outside_playback_unchanged():
+    from voice.live import EchoGuard
+
+    guard = EchoGuard()
+    pcm = echo_source()[:768].tobytes()
+    assert guard.filter(pcm, now=1) == pcm
+    guard.start(1, now=0)
+    guard.append(echo_source().tobytes())
+    guard.played(1, 1000, done=True, now=1)
+    assert guard.filter(pcm, now=2) == pcm
+
+
+def test_echo_guard_passes_quiet_person_after_playback_but_rejects_tail():
+    import numpy as np
+    from voice.live import EchoGuard, RATE
+
+    guard = EchoGuard()
+    source = echo_source()
+    guard.start(1, now=0)
+    guard.append(source.tobytes())
+    end = int(.94 * RATE)
+    echo = (source[end - 768:end] * .1).astype("<i2").tobytes()
+    assert guard.filter(echo, now=1) == bytes(1536)
+    guard.played(1, 1000, done=True, now=1)
+    assert guard.filter(echo, now=1.05) == bytes(1536)
+    quiet_person = np.random.default_rng(23).integers(-80, 81, 768).astype("<i2").tobytes()
+    assert guard.filter(quiet_person, now=1.05) == quiet_person
+
+
+def test_echo_guard_tracks_coupling_and_ignores_old_playheads():
+    from voice.live import EchoGuard, RATE
+
+    guard = EchoGuard()
+    source = echo_source()
+    guard.start(2, now=0)
+    guard.append(source.tobytes())
+    guard.played(1, 0, done=True, now=.5)
+    for db in [-30] * 5 + [-20] * 5:
+        end = int(.94 * RATE)
+        echo = (source[end - 768:end] * 10 ** (db / 20)).astype("<i2").tobytes()
+        assert guard.filter(echo, now=1) == bytes(1536)
+    assert .08 < guard.gain < .11
+    for _ in range(5):
+        echo = (source[end - 768:end] * 10 ** (-30 / 20)).astype("<i2").tobytes()
+        assert guard.filter(echo, now=1) == bytes(1536)
+    assert .025 < guard.gain < .035
+
+
+def test_echo_guard_does_not_learn_a_similar_vowel_after_person_onset():
+    import numpy as np
+    from voice.live import EchoGuard, RATE
+
+    guard = EchoGuard()
+    source = echo_source()
+    guard.start(1, now=0)
+    guard.append(source.tobytes())
+    end = int(.94 * RATE)
+    frame = source[end - 768:end]
+    assert guard.filter((frame * .1).astype("<i2").tobytes(), now=1) == bytes(1536)
+    gain = guard.gain
+    person = np.random.default_rng(3).normal(0, 5000, 768).astype("<i2").tobytes()
+    assert guard.filter(person, now=1.032) == person
+    similar_vowel = (frame * .8).astype("<i2").tobytes()
+    assert guard.filter(similar_vowel, now=1.064) == similar_vowel
+    assert guard.gain == gain
+
+
+@pytest.mark.parametrize("has_echo", [True, False])
+def test_echo_guard_keeps_rejected_audio_out_of_next_turn(live_env, monkeypatch, has_echo):
+    import numpy as np
+    from voice import turn
+
+    monkeypatch.setattr(turn, "_sessions", lambda: (None, None))
+    # live_env retains the real Endpointer so this exercises filtering before VAD.
+    endpoint = live_env.endpointer
+    monkeypatch.setattr(endpoint, "_is_speech", lambda self, audio: bool(audio.any()))
+    monkeypatch.setattr(endpoint, "_probability", lambda self: 1.)
+    source = (6000 * np.sin(2 * np.pi * 125 * np.arange(48000) / 24000)).astype("<i2")
+    echo = (source[:768] * .1).astype("<i2").tobytes() if has_echo else bytes(1536)
+
+    async def run():
+        async with live_env([SSE([audio_delta("Hello.", source.tobytes())], .0007),
+                             SSE([audio_delta("Okay.")], .0007)],
+                            greet=True, endpoint=endpoint) as (live, call, ws, requests, written):
+            await until(lambda: ws.events("reply_done"))
+            await call.on_control({"type": "played", "id": 1, "ms": 800})
+            for _ in range(15):
+                await call.on_audio(echo)
+            assert not ws.events("flush") and not call.ep.in_speech
+            assert call.turn == 0 and len(requests) == 1
+            assert not any(call.ep._preroll)
+            # A louder person cuts through the same reference without an extra hold.
+            person = (9000 * np.sin(2 * np.pi * 375 * np.arange(768) / 24000)).astype("<i2").tobytes()
+            for _ in range(4):
+                await call.on_audio(person)
+            assert call.ep.in_speech
+            # A vowel can resemble the reply even when the mic has no echo.
+            similar_vowel = (source[:768] * 1.5).astype("<i2").tobytes()
+            for _ in range(8):
+                await call.on_audio(similar_vowel)
+            if not has_echo:
+                assert call.echo.gain is None
+            assert ws.events("flush") == [{"type": "flush", "id": 1}]
+            await call.on_control({"type": "played", "id": 1, "ms": 800, "done": True})
+            for _ in range(4):
+                await call.on_audio(echo)  # acoustic tail after the flush acknowledgement
+            await call.on_audio(bytes(24000))
+            await until(lambda: call.turn == 1)
+            if has_echo:
+                assert echo not in call.reply.pcm
     asyncio.run(run())

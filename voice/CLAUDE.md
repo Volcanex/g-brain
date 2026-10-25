@@ -101,6 +101,14 @@ Engines (`VOICE_LIVE_ENGINE`, default `openrouter`):
   `~/.local/share/voice-live/fillers/<voice>/` and kept only if the model said
   exactly the line. No filler when the model already said something before
   the tool call ("Let me check").
+- Before VAD, `live.EchoGuard` replaces residual reply echo with silence on
+  the endpointer's existing 32 ms frames, including its preroll and turn audio.
+  It uses outgoing PCM and `played` acknowledgements to search a measured lag
+  window and learns coupling from correlated echo frames. Learning stops during
+  VAD speech and for 300 ms after unexplained mic energy so an interruption
+  cannot train it, including when no echo coupling has been learned yet.
+  Once playback ends, only a matching echo tail is suppressed; other input
+  passes unchanged. The provider-managed realtime engines keep their own VAD.
 - The greeting is not a model call: a line for the hour ("Hey, you're up
   late.") read once per voice into the same folder (`line-<hash>.pcm`, see
   `GREETINGS`), never the same one twice running. Lines not read yet are read

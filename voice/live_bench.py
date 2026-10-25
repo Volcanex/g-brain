@@ -669,7 +669,8 @@ async def echo_selftest():
         levels = [(at, statistics.mean(struct.unpack("<480h", pcm))) for at, pcm in ws.frames]
         first = next(at for at, level in levels if level > 100)
         delay_ms = (first - bench.rows[0]["first_audio_at"]) * 1000
-        assert 50 <= delay_ms <= 110, delay_ms
+        # A mic frame can contain echo up to one frame ahead of its send time.
+        assert bench.echo.delay * 1000 - FRAME_MS <= delay_ms <= 110, delay_ms
         assert any(abs(level - 1000) < 20 for _, level in levels)
         assert bench.rows[0]["playback_done"]
     finally:
