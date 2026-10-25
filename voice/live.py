@@ -48,6 +48,7 @@ SESSIONS = ("talk", "app", "bench")
 READ_TOOLS = {"brain_search", "brain_read", "recent_activity", "list_todos"}
 MAX_CALL_S = 60 * 60
 MAX_TOKENS = 1200          # ~20 audio tokens a second, so roughly a minute of speech
+TODO_PAGE = 2              # todos a list_todos page hands the model to say
 MIN_TURN_MS = 250          # shorter "speech" is a cough or a click
 ECHO_LAG_MS = 512          # bench replay: 480 ms worst lag with a 250 ms playback stall, +32 ms VAD frame
 ECHO_LEAD_MS = 64          # one 32 ms VAD frame plus the bench's 20 ms playback scheduling quantum
@@ -104,9 +105,9 @@ line breaks, and never read out URLs, file paths, slugs, ids, tags or categories
 Say times the way people do: "twenty to midnight", "just gone half eleven",
 never "23:37". Start with the answer itself, with no run-up such as "Here's
 what's on your list", "Of course" or "Sure, I'll start". For a list, the count
-comes first, then two or three items in a few words each, then a short question:
-"Six today. Accept the Slack invite, book the graduation place and change the
-phone password. Want the rest?"
+comes first, then two items in a few words each, as one sentence, then a short
+question: "Six today. Accept the Slack invite and book the graduation place.
+Want the rest?"
 When you've answered, stop. Don't end with an offer such as "let me know if
 you need anything else" or "anything else?": they'll talk when they want to.
 If they tell you to stop, say "Sure." or "Okay." and nothing more.
@@ -195,15 +196,16 @@ def spoken_time(t: datetime.datetime) -> str:
 
 
 def _todo_digest(todos: list, start: int = 0) -> dict:
-    """What a call needs from list_todos: the counts and the next three, soonest first.
+    """What a call needs from list_todos: the counts and the next two, soonest first.
     The full records (56 with bodies on 2026-10-24) were cut at 6000 characters, so the
     model could neither count them nor afford them. Given a flat list it read every
     item out, and given three to say plus more "only if asked" it still read five, so
-    it gets three at a time and asking again pages on."""
+    it gets a page at a time and asking again pages on. Three a page were still
+    read out "one, two, three" (register judge 6), so a page is two."""
     today = datetime.datetime.now(ZoneInfo("Europe/London")).date()
     soon = sorted(todos, key=lambda t: (t.get("due") or "9999", t.get("priority") or "P9"))
     page, late = [], 0
-    for t in soon[start:start + 3]:
+    for t in soon[start:start + TODO_PAGE]:
         item = {"slug": t.get("slug"), "title": t.get("title"), "priority": t.get("priority")}
         when = spoken_due(t.get("due"), today)
         # Said once for the page: a date on each late item was read out three times.

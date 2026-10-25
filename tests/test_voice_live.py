@@ -1027,11 +1027,11 @@ def test_call_gets_todo_count_and_soonest_not_every_record():
     todos = [{"slug": f"t{i}", "title": f"T{i}", "due": None if i % 2 else f"2099-11-{i + 1:02d}",
               "priority": "P2", "body": "long " * 100} for i in range(20)]
     digest = live._todo_digest(todos)
-    assert digest["open_in_all"] == 20 and digest["more_after_these"] == 17
+    assert digest["open_in_all"] == 20 and digest["more_after_these"] == 18
     assert digest["due_today_or_overdue"] == 0
-    assert [t["slug"] for t in digest["say_these"]] == ["t0", "t2", "t4"]
+    assert [t["slug"] for t in digest["say_these"]] == ["t0", "t2"]
     assert "body" not in digest["say_these"][0]
-    assert [t["slug"] for t in live._todo_digest(todos, 3)["say_these"]] == ["t6", "t8", "t10"]
+    assert [t["slug"] for t in live._todo_digest(todos, 2)["say_these"]] == ["t4", "t6"]
     assert live._todo_digest(todos, 18) == {**digest, "say_these": live._todo_digest(todos, 18)["say_these"],
                                             "more_after_these": 0}
 
@@ -1056,7 +1056,7 @@ def test_asking_again_next_turn_pages_on_and_a_later_ask_starts_over(live_env, m
             pages = {m["tool_call_id"]: m["content"] for p in requests for m in p.get("messages", [])
                      if m.get("role") == "tool"}
             slugs = [[t["slug"] for t in json.loads(pages[c])["say_these"]] for c in ("a", "b", "c")]
-            assert slugs == [["t0", "t1", "t2"], ["t3", "t4", "t5"], ["t0", "t1", "t2"]]
+            assert slugs == [["t0", "t1"], ["t2", "t3"], ["t0", "t1"]]
     asyncio.run(run())
 
 
@@ -1080,7 +1080,7 @@ def test_the_same_list_asked_again_pages_on_and_a_different_one_starts_over(live
             pages = {m["tool_call_id"]: m["content"] for p in requests for m in p.get("messages", [])
                      if m.get("role") == "tool"}
             slugs = [[t["slug"] for t in json.loads(pages[c])["say_these"]] for c in asks]
-            assert slugs == [["t0", "t1", "t2"], ["t3", "t4", "t5"], ["t0", "t1", "t2"]]
+            assert slugs == [["t0", "t1"], ["t2", "t3"], ["t0", "t1"]]
     asyncio.run(run())
 
 
