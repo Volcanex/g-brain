@@ -159,6 +159,25 @@ def _words(text: str) -> list[str]:
     return "".join(c for c in text.lower() if c.isalnum() or c.isspace()).split()
 
 
+REPORT_FIELDS = ("input", "route", "buffers", "restarts", "problem", "chunks", "peak_level", "played_ms")
+
+
+def report_line(ev: dict) -> str:
+    """A client's hang-up report as key=value: known keys only, text on one line and cut short."""
+    parts = []
+    for key in REPORT_FIELDS:
+        value = ev.get(key)
+        if isinstance(value, bool) or value is None:
+            continue
+        if isinstance(value, float):
+            parts.append(f"{key}={value:g}")
+        elif isinstance(value, int):
+            parts.append(f"{key}={value}")
+        else:
+            parts.append(f"{key}={json.dumps(' '.join(str(value).split())[:160])}")
+    return " ".join(parts)
+
+
 def heard(text: str, played_ms: float, audio_ms: float) -> str:
     """The part of a cut-off reply the person actually heard, by playing time."""
     if audio_ms <= 0 or played_ms >= audio_ms:
@@ -578,6 +597,9 @@ class Call:
         elif kind == "mute":
             self.muted = bool(ev.get("on"))
             self.ep.reset()
+        elif kind == "report":
+            # The app's own account of its mic, beside mic_s in the call's last line.
+            log.info("live client report sender=%s client=%s %s", self.sender, self.client, report_line(ev))
         elif kind == "say":
             text = " ".join(str(ev.get("text") or "").split())[:2000]
             if text:

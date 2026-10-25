@@ -158,6 +158,11 @@ checks the `gcommand_auth` cookie and relays frames to `ws://127.0.0.1:8077/live
   - `{"type":"interrupt"}`: the person tapped to stop the Voice.
   - `{"type":"mute","on":bool}`: a muted mic counts as silence.
   - `{"type":"say","text":"..."}`: a typed turn in the middle of a call.
+  - `{"type":"report",...}`: the app's account of its audio, sent just before
+    `bye`: `input` format, `route`, tap `buffers`, `restarts`, `problem`,
+    `chunks` sent, `peak_level` (0 to 1) and `played_ms`. Logged as `live
+    client report` beside the call's `mic_s` line; read in that order it says
+    where a silent call lost the sound. Optional: the web page does not send it.
   - `{"type":"bye"}`.
 - Server to client, text frames:
   - `{"type":"ready","engine","model","voice","rate":24000}` after hello.

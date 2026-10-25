@@ -381,6 +381,16 @@ def test_heard(played, audio, expected):
     assert heard("one two three four", played, audio) == expected
 
 
+def test_report_line_keeps_known_keys_on_one_line():
+    from voice.live import report_line
+    line = report_line({"type": "report", "chunks": 49, "peak_level": 0.612, "buffers": 0, "input": "48000 Hz 1 ch",
+                        "route": "Microphone\nBuiltIn", "problem": "x" * 500, "restarts": True, "secret": "no"})
+    assert line.startswith('input="48000 Hz 1 ch" route="Microphone BuiltIn" buffers=0 problem="xxx')
+    assert line.endswith(" chunks=49 peak_level=0.612")
+    assert "secret" not in line and "restarts" not in line and "\n" not in line
+    assert len(line) < 300
+
+
 @pytest.mark.parametrize("flags,expected,failed", [
     ([], 0, []),
     (["--max-eos-p50", "0", "--max-flush-ms", "0", "--max-turn-cost", "0"], 1,
