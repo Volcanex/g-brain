@@ -51,6 +51,7 @@ MIN_TURN_MS = 250          # shorter "speech" is a cough or a click
 RATE_REPLIES = 40          # per minute per session: a reply heard back through the
 RATE_WINDOW = 60.0         # speakers can loop, and every reply costs a model call
 STT_WAIT_S = 6.0
+GOODBYE_WAIT_S = 2.0       # end_call waits this long for the transcript; 6 s held a "stop" turn 9 s
 ACK_WAIT_S = 0.6           # for the client's playhead after a flush
 MAX_TURN_S = 120           # one turn sent to the model holds at most this much audio
 FILLER_DIR = os.path.join(os.environ.get("VOICE_LIVE_MODELS")
@@ -596,7 +597,7 @@ class Call:
         for _ in range(config.MAX_TOOL_ITERATIONS):
             said, calls = await self.stream(r, messages, tools=r.kind != "greet")
             work = [c for c in calls if c["function"]["name"] != "end_call"]
-            if len(work) < len(calls) and GOODBYE_WORDS.search(await self.user_text(r)):
+            if len(work) < len(calls) and GOODBYE_WORDS.search(await self.user_text(r, GOODBYE_WAIT_S)):
                 r.hangup = True
                 if not work and (said.strip() or await self.say_goodbye(r)):
                     return                    # the goodbye is said: hang up once it has played
@@ -705,7 +706,8 @@ class Call:
         r.tools.append(name)
         if name == "end_call":
             result = ({"ok": "the call ends once your goodbye has played"} if r.hangup else
-                      {"error": "they did not say goodbye, so the call stays up: answer what they said"})
+                      {"error": "not a goodbye, so the call stays up. Acknowledge their last words in a "
+                                "few words and stop. Do not repeat an earlier answer."})
             return {"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result)}
         if self.sender == "bench" and name not in READ_TOOLS:
             return {"role": "tool", "tool_call_id": call["id"],
@@ -872,13 +874,13 @@ class Call:
             await asyncio.to_thread(transcript.append, self.sender, "assistant", said)
 
     # --- the person's words, beside the reply ------------------------------------
-    async def user_text(self, r: Reply) -> str:
+    async def user_text(self, r: Reply, wait: float = STT_WAIT_S) -> str:
         if r.kind == "text":
             return r.user_text
         if r.stt is None:
             return ""
         try:
-            return await asyncio.wait_for(asyncio.shield(r.stt), STT_WAIT_S) or ""
+            return await asyncio.wait_for(asyncio.shield(r.stt), wait) or ""
         except Exception:
             return ""
 

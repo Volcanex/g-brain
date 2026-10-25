@@ -1150,7 +1150,7 @@ def test_stop_is_not_a_goodbye_so_end_call_keeps_the_call(live_env):
             assert not ws.events("end") and ws.client_state == live.WebSocketState.CONNECTED
             assert ws.events("assistant")[-1]["text"] == "Sure."
             last = [p for p in requests if p.get("stream")][-1]
-            assert "did not say goodbye" in last["messages"][-1]["content"]
+            assert "not a goodbye" in last["messages"][-1]["content"]
     asyncio.run(run())
 
 
