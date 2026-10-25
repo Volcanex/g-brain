@@ -11,8 +11,9 @@ todo), done on a recurring todo ticks one date (`done_date`).
 Rules this module enforces in code, not only in the prompt:
 - A target names exactly one todo or nothing changes. Several matches come back
   as `candidates` (and a rows block of them) for the model to ask about.
-- DELETE never runs here. `delete_todo` writes nothing: it returns the todo as a
-  row carrying a Delete action, and Gabriel taps it in the app.
+- `delete_todo` removes a todo only when called with `confirmed=True`, which the
+  model may send only after Gabriel has said yes to deleting that named todo.
+  Unconfirmed, it writes nothing and returns the todo as a row with a Delete action.
 - Every change returns the updated todo as a rows block under `_blocks`, which
   the app session draws under the reply (WhatsApp and talk just drop it).
 
@@ -149,8 +150,75 @@ def find(target):
 def _when(it):
     if it.get("start"):
         raw = str(it["start"])
-        return raw.replace("T", " ")[:16] if "T" in raw else raw[:10]
-    return str(it["due"]) if it.get("due") else ""
+        when = raw.replace("T", " ")[:16] if "T" in raw else raw[:10]
+    else:
+        when = str(it["due"]) if it.get("due") else ""
+    if it.get("rrule"):
+        rep = repeat_text(it["rrule"])
+        when = f"{rep}, {when[11:]}" if "T" in str(it.get("start") or "") else rep
+    return when
+
+
+_BYDAY = {"MO": "Monday", "TU": "Tuesday", "WE": "Wednesday", "TH": "Thursday",
+          "FR": "Friday", "SA": "Saturday", "SU": "Sunday"}
+_REPEATS = {"daily": "FREQ=DAILY", "every day": "FREQ=DAILY",
+            "weekdays": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "every weekday": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+            "weekly": "FREQ=WEEKLY", "every week": "FREQ=WEEKLY",
+            "fortnightly": "FREQ=WEEKLY;INTERVAL=2", "every two weeks": "FREQ=WEEKLY;INTERVAL=2",
+            "monthly": "FREQ=MONTHLY", "every month": "FREQ=MONTHLY",
+            "yearly": "FREQ=YEARLY", "every year": "FREQ=YEARLY", "annually": "FREQ=YEARLY"}
+_NO_REPEAT = {"", "none", "no", "off", "never", "once", "one-off", "one off", "not"}
+
+
+def repeat_text(rule):
+    """'every weekday', 'every Monday and Thursday', 'daily': a rule as it is said."""
+    parts = dict(c.partition("=")[::2] for c in str(rule).upper().replace("RRULE:", "").split(";") if "=" in c)
+    freq, every = parts.get("FREQ", ""), int(parts.get("INTERVAL") or 1)
+    days = [d for d in (parts.get("BYDAY") or "").split(",") if d in _BYDAY]
+    if freq == "WEEKLY" and days:
+        if sorted(days) == sorted(["MO", "TU", "WE", "TH", "FR"]):
+            return "every weekday"
+        names = [_BYDAY[d] for d in days]
+        return "every " + (names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1])
+    unit = {"DAILY": "day", "WEEKLY": "week", "MONTHLY": "month", "YEARLY": "year"}.get(freq)
+    if not unit:
+        return "repeats"
+    return f"every {unit}" if every == 1 else f"every {every} {unit}s"
+
+
+def resolve_repeat(phrase):
+    """An rrule for a phrase or rule, '' to stop repeating, None if unreadable."""
+    p = (phrase or "").strip()
+    if p.lower() in _NO_REPEAT:
+        return ""
+    if p.upper().replace("RRULE:", "").startswith("FREQ="):
+        return p.upper().replace("RRULE:", "")
+    if p.lower() in _REPEATS:
+        return _REPEATS[p.lower()]
+    m = re.fullmatch(r"(?:every|each)\s+(.+)", p.lower())
+    if m:
+        names = [w.strip() for w in re.split(r",|\band\b", m.group(1)) if w.strip()]
+        codes = [d[:2].upper() for n in names for d in _DAYS if d.startswith(n.rstrip("s")[:3])]
+        if names and len(codes) == len(names):
+            return "FREQ=WEEKLY;BYDAY=" + ",".join(codes)
+    return None
+
+
+def next_occurrence(it, day):
+    """The first open day of a recurring todo on or after `day`."""
+    raw = str(it.get("start") or it.get("due") or "")
+    if not raw or not it.get("rrule"):
+        return None
+    timed = "T" in raw
+    first = dt.datetime.fromisoformat(raw) if timed else dt.date.fromisoformat(raw[:10])
+    horizon = day + dt.timedelta(days=800)
+    until = dt.datetime.combine(horizon, dt.time.max) if timed else horizon
+    marked = {str(d) for d in (it.get("done_dates") or []) + (it.get("failed_dates") or [])}
+    for occ in brain_todos.expand_rrule(first, it["rrule"], until):
+        d = occ.date() if timed else occ
+        if d >= day and d.isoformat() not in marked:
+            return d
+    return None
 
 
 def row(it, actions=False):
@@ -212,12 +280,27 @@ def _apply(target, fields, title):
 # ------------------------------------------------------------------ tools
 
 def update_todo(target, title=None, date=None, time=None, priority=None, starred=None,
-                category=None, location=None):
-    """Change fields on one todo. date/time take natural phrases."""
+                category=None, location=None, repeat=None):
+    """Change fields on one todo. date/time take natural phrases. `repeat` sets a
+    recurrence ('every weekday', 'weekly', an rrule) or stops one ('none'); a todo
+    that stops repeating keeps its next open day unless a date is given."""
     it, err = find(target)
     if err:
         return err
     fields = {}
+    if repeat is not None:
+        rule = resolve_repeat(repeat)
+        if rule is None:
+            return {"error": f"could not read the repeat '{repeat}'; say daily, weekly, every weekday, "
+                             "every Monday, or none to stop it"}
+        if rule:
+            fields["rrule"] = rule
+        elif it.get("rrule"):
+            fields.update(rrule=None, done_dates=None, failed_dates=None)
+            if not date:
+                nxt = next_occurrence(it, today())
+                date = nxt.isoformat() if nxt else None
+            it = {**it, "rrule": None}
     if title:
         fields["title"] = title
     if priority:
@@ -250,6 +333,13 @@ def update_todo(target, title=None, date=None, time=None, priority=None, starred
                 fields["end"] = (new_start + length).isoformat()
             if it.get("due"):
                 fields["due"] = None
+        elif d and it.get("start"):
+            fields["start"] = d.isoformat()
+            if it.get("end"):
+                fields["end"] = (d + (dt.date.fromisoformat(str(it["end"])[:10])
+                                      - dt.date.fromisoformat(start[:10]))).isoformat()
+        elif d and "rrule" in fields:
+            fields["due"] = d.isoformat()
         elif d:
             fields["reschedule_to"] = d.isoformat()
     if not fields:
@@ -309,15 +399,24 @@ def drop_todo(target):
     return _apply(target, {"status": "cancelled"}, "Dropped")
 
 
-def delete_todo(target):
-    """Never deletes. Returns the todo as a row with a Delete action for Gabriel to tap."""
+def delete_todo(target, confirmed=False):
+    """Delete one todo for good, only with confirmed=True. Unconfirmed it writes
+    nothing and returns the todo, with a Delete action, for the model to ask about."""
     it, err = find(target)
     if err:
         return err
-    return {"ok": True, "deleted": False,
-            "note": ("Nothing was deleted. The app shows this todo with a Delete button; "
-                     "tell Gabriel to tap it if he is sure. Offer to drop it instead."),
-            BLOCKS: [rows_block([it], "Tap Delete to remove", actions=True)]}
+    if confirmed is not True:
+        return {"ok": True, "deleted": False,
+                "note": (f"Nothing was deleted yet. Ask whether to delete '{it['title']}' for good. "
+                         "After a clear yes, call delete_todo again with confirmed=true."),
+                BLOCKS: [rows_block([it], "Delete this?", actions=True)]}
+    try:
+        gone = brain_todos.delete(it["slug"])
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+    return {"ok": True, "deleted": True, "todo": {"slug": gone["slug"], "title": gone["title"]},
+            BLOCKS: [{"type": "rows", "title": "Deleted",
+                      "rows": [{**row(gone), "struck": True}]}]}
 
 
 def create_todo(**kw):

@@ -33,7 +33,7 @@ import httpx
 import numpy as np
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
-from . import agent, config, talk, transcript
+from . import agent, config, talk, todos, transcript
 from .brief import build_brief
 from .prompt import SYSTEM, date_rule
 
@@ -205,6 +205,8 @@ def _todo_digest(todos: list, start: int = 0) -> dict:
     page, late = [], 0
     for t in soon[start:start + 3]:
         item = {"slug": t.get("slug"), "title": t.get("title"), "priority": t.get("priority")}
+        if t.get("rrule"):
+            item["repeats"] = todos.repeat_text(t["rrule"])
         when = spoken_due(t.get("due"), today)
         # Said once for the page: a date on each late item was read out three times.
         if when and when.startswith("overdue"):

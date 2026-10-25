@@ -55,14 +55,15 @@ TOOLS = [
             "required": ["title", "category"]}}},
     {"type": "function", "function": {
         "name": "update_todo",
-        "description": "Change one todo or calendar item: title, date, time, priority, star, category, location. target is its slug or words from its title. date and time take natural phrases (tomorrow, next Friday, 3pm). If the result says ambiguous, ask which one; never guess.",
+        "description": "Change one todo or calendar item: title, date, time, priority, star, category, location, repeat. target is its slug or words from its title. date and time take natural phrases (tomorrow, next Friday, 3pm). If the result says ambiguous, ask which one; never guess.",
         "parameters": {"type": "object", "properties": {
             "target": {"type": "string"}, "title": {"type": "string"},
             "date": {"type": "string", "description": "New day: YYYY-MM-DD or a phrase like tomorrow, next Friday."},
             "time": {"type": "string", "description": "New time, e.g. 15:00 or 3pm. Makes it a timed event."},
             "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
             "starred": {"type": "boolean", "description": "Star (urgent) or unstar."},
-            "category": {"type": "string"}, "location": {"type": "string"}},
+            "category": {"type": "string"}, "location": {"type": "string"},
+            "repeat": {"type": "string", "description": "Make it repeat (daily, weekly, every weekday, every Monday and Thursday, or an rrule) or stop it repeating with none. A todo that stops repeating stays as a one-off on its next day unless date is given."}},
             "required": ["target"]}}},
     {"type": "function", "function": {
         "name": "reschedule_todo",
@@ -86,8 +87,11 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
     {"type": "function", "function": {
         "name": "delete_todo",
-        "description": "Asked to delete a todo: this NEVER deletes. It shows the todo with a Delete button the owner taps himself. Say so.",
-        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
+        "description": "Delete one todo for good. First call it without confirmed: nothing is deleted and you get the todo back. Ask whether to delete it, naming it, and only after a clear yes call again with confirmed=true. Dropping (drop_todo) keeps it as cancelled instead.",
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string"},
+            "confirmed": {"type": "boolean", "description": "true only after the owner said yes to deleting this named todo."}},
+            "required": ["target"]}}},
     {"type": "function", "function": {
         "name": "pulse_note",
         "description": f"Append one short undated snippet of current context to the pulse page (short-term memory). Use when {config.OWNER_NAME} states a currently-true fact in passing ('working from the library this week', 'leaning toward X'). Dated/actionable things -> create_todo instead. Confirm you noted it.",

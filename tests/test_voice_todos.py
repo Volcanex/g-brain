@@ -1,5 +1,5 @@
 """Voice's todo and calendar tools: edits, natural dates, the ambiguity rule,
-and the delete guard (Voice never deletes). Every record stays in a temp vault."""
+and the delete guard (Voice deletes only on a confirmed second call). Every record stays in a temp vault."""
 import datetime as dt
 import json
 
@@ -96,7 +96,7 @@ def test_ambiguous_target_changes_nothing_and_shows_candidates(T):
     assert "error" in T.update_todo("nothing like this", title="x")
 
 
-def test_delete_never_deletes_and_returns_a_delete_row(T, tmp_path):
+def test_unconfirmed_delete_writes_nothing_and_returns_a_delete_row(T, tmp_path):
     it = _make("Test delete me")
     before = sorted(p.name for p in (tmp_path / "todos").iterdir())
     out = T.delete_todo("delete me")
@@ -105,15 +105,57 @@ def test_delete_never_deletes_and_returns_a_delete_row(T, tmp_path):
     assert _stored(it["slug"])["status"] == "open"
     act = out[T.BLOCKS][0]["rows"][0]["action"]
     assert act["method"] == "DELETE" and act["path"] == f"/api/brain/api/todos/{it['slug']}"
+    assert T.delete_todo("delete me", confirmed="yes")["deleted"] is False
 
 
-def test_no_tool_can_delete(T):
-    """The guard: nothing Voice dispatches removes a todo file or calls DELETE."""
-    import inspect
-    from voice import agent, todos
-    src = inspect.getsource(todos)
-    assert ".unlink(" not in src and "os.remove" not in src and "httpx" not in src
-    assert not any("delete" in n and n != "delete_todo" for n in agent.DISPATCH)
+def test_confirmed_delete_removes_the_todo(T, tmp_path):
+    it = _make("Test delete me")
+    out = T.delete_todo("delete me", confirmed=True)
+    assert out["deleted"] is True and out["todo"]["slug"] == it["slug"]
+    assert not (tmp_path / "todos" / f"{it['slug']}.md").exists()
+    assert "error" in T.delete_todo(it["slug"], confirmed=True)
+
+
+def test_rest_delete_route(T):
+    import brain_todos
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI()
+    app.include_router(brain_todos.create_router())
+    it = _make("Test delete me")
+    c = TestClient(app)
+    assert c.delete(f"/todos/{it['slug']}").status_code == 200
+    assert c.delete(f"/todos/{it['slug']}").status_code == 404
+
+
+def test_stop_repeating_keeps_the_next_open_day(T):
+    import brain_todos
+    it = _make("Team Standup", start="2026-06-08T09:30:00", end="2026-06-08T10:00:00",
+               rrule="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", category="work")
+    brain_todos.update(it["slug"], {"done_date": "2026-10-26"})
+    out = T.update_todo("standup", repeat="none")
+    assert out["ok"]
+    md = _stored(it["slug"])
+    assert "rrule" not in md and "done_dates" not in md
+    assert str(md["start"]) == "2026-10-27T09:30:00" and str(md["end"]) == "2026-10-27T10:00:00"
+
+
+def test_stop_repeating_on_a_named_day_and_set_a_repeat(T):
+    it = _make("Daily walk", start="2026-09-19T16:00:00", rrule="FREQ=DAILY", category="health")
+    T.update_todo("walk", repeat="off", date="friday")
+    md = _stored(it["slug"])
+    assert "rrule" not in md and str(md["start"]) == "2026-10-30T16:00:00"
+    T.update_todo("walk", repeat="every Monday and Thursday")
+    assert _stored(it["slug"])["rrule"] == "FREQ=WEEKLY;BYDAY=MO,TH"
+    assert "error" in T.update_todo("walk", repeat="now and then")
+
+
+def test_repeat_is_said_and_shown():
+    from voice import todos
+    assert todos.repeat_text("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR") == "every weekday"
+    assert todos.repeat_text("FREQ=MONTHLY") == "every month"
+    assert todos.repeat_text("FREQ=WEEKLY;INTERVAL=2") == "every 2 weeks"
+    assert todos._when({"start": "2026-06-08T09:30:00", "rrule": "FREQ=DAILY"}) == "every day, 09:30"
 
 
 def test_create_resolves_a_phrase_and_shows_the_row(T):

@@ -544,6 +544,15 @@ def update(slug, fields):
     return _update(slug, fields)
 
 
+def delete(slug):
+    """Remove a todo for good, as the REST DELETE does. The vault's git history
+    keeps the file, and the calendar outlet drops its mirrored event as an orphan."""
+    with store_lock(TODOS_DIR):
+        post = _load(slug)
+        _path_for(slug).unlink()
+    return _serialize(slug, post)
+
+
 def resolve_slug(permalink_or_slug):
     return _resolve_slug(permalink_or_slug)
 
@@ -1152,6 +1161,15 @@ def create_router() -> APIRouter:
         fields = payload.model_dump(exclude_unset=True)
         try:
             return _update(slug, fields)
+        except FileNotFoundError:
+            raise HTTPException(404, "todo not found")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @r.delete("/{slug}")
+    async def delete_(slug: str):
+        try:
+            return delete(slug)
         except FileNotFoundError:
             raise HTTPException(404, "todo not found")
         except ValueError as e:
