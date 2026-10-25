@@ -119,6 +119,10 @@ Engines (`VOICE_LIVE_ENGINE`, default `openrouter`):
   `end_call` with no words plays a ready goodbye (`GOODBYES`, cached like the
   greetings) rather than paying a second model call to say "Bye.". Talking
   over the goodbye or starting a new turn keeps the call up.
+- `end_call` is honoured only when their words match `GOODBYE_WORDS` (the
+  transcript gets `GOODBYE_WAIT_S` to arrive). "Okay, stop" used to hang up.
+  A refused bare `end_call` plays a ready ack (`ACKS`, "Okay."), which keeps
+  the stop turn near 1 s where a second request took 3 to 4 s.
 - What the model is handed is shaped for speech, because rules in the prompt
   alone did not hold on gpt-audio-mini: the time comes ready-said
   (`spoken_time`, "twenty to midnight"), a short system note right before each
