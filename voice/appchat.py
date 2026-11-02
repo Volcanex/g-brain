@@ -200,6 +200,8 @@ def stream_turn(session, text, *, budget=None, images=None, files=None, attachme
     metadata recorded with the user's turn so history can show what was sent."""
     t0 = time.time()
     ms = lambda: int((time.time() - t0) * 1000)  # noqa: E731
+    if transcript.rotate_if_stale(session):
+        agent._HISTORY[session] = []   # the 4am reset clears the model's context too
     if session not in agent._HISTORY:
         agent._HISTORY[session] = transcript.load_tail(session, agent._MAX_TURNS)
     history = agent._HISTORY[session]

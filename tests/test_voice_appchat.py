@@ -199,3 +199,44 @@ def test_chat_stream_is_ndjson(app_turn, monkeypatch):
     evs = [json.loads(line) for line in r.text.splitlines()]
     assert r.headers["content-type"].startswith("application/x-ndjson")
     assert [e["t"] for e in evs] == ["delta", "delta", "done"] and evs[-1]["reply"] == "Hi there."
+
+
+def test_boundary_is_4am_london_across_dst():
+    import datetime as d
+    from voice import transcript
+    U = d.timezone.utc
+    assert transcript.last_boundary(d.datetime(2026, 1, 10, 3, 59, tzinfo=U)) == d.datetime(2026, 1, 9, 4, 0, tzinfo=U)
+    assert transcript.last_boundary(d.datetime(2026, 1, 10, 4, 0, tzinfo=U)) == d.datetime(2026, 1, 10, 4, 0, tzinfo=U)
+    # summer (BST): 04:00 London is 03:00 UTC
+    assert transcript.last_boundary(d.datetime(2026, 7, 10, 2, 59, tzinfo=U)) == d.datetime(2026, 7, 9, 3, 0, tzinfo=U)
+    assert transcript.last_boundary(d.datetime(2026, 7, 10, 3, 0, tzinfo=U)) == d.datetime(2026, 7, 10, 3, 0, tzinfo=U)
+
+
+def test_app_transcript_is_archived_after_4am_and_context_resets(app_turn, monkeypatch):
+    import datetime as d
+    from voice import transcript
+    appchat, agent, tdir = app_turn
+    tdir.mkdir()
+    old = d.datetime.now(d.timezone.utc) - d.timedelta(days=2)
+    (tdir / "app.jsonl").write_text(json.dumps({"ts": old.isoformat(), "role": "user", "text": "yesterday"}) + "\n")
+    (tdir / "web.jsonl").write_text(json.dumps({"ts": old.isoformat(), "role": "user", "text": "web stays"}) + "\n")
+    agent._HISTORY["app"] = [{"role": "user", "content": "yesterday"}]
+    _rounds(monkeypatch, appchat, [[("text", "hi"), ("calls", [])]])
+    list(appchat.stream_turn("app", "morning"))
+    day = old.astimezone(transcript.RESET_TZ).date().isoformat()
+    assert "yesterday" in (tdir / f"app-{day}.jsonl").read_text()
+    lines = (tdir / "app.jsonl").read_text().splitlines()
+    assert [json.loads(x)["text"] for x in lines] == ["morning", "hi"]
+    assert agent._HISTORY["app"] == [{"role": "user", "content": "morning"}, {"role": "assistant", "content": "hi"}]
+    assert (tdir / "web.jsonl").exists()   # other sessions never reset
+
+
+def test_rotation_only_after_the_boundary(app_turn):
+    import datetime as d
+    from voice import transcript
+    _, _, tdir = app_turn
+    tdir.mkdir()
+    now = d.datetime.now(d.timezone.utc)
+    (tdir / "app.jsonl").write_text(json.dumps({"ts": now.isoformat(), "role": "user", "text": "x"}) + "\n")
+    assert transcript.rotate_if_stale("app", now=now) is False
+    assert transcript.rotate_if_stale("app", now=now + d.timedelta(days=1)) is True
