@@ -17,9 +17,12 @@ def store(request, tmp_path, monkeypatch):
     monkeypatch.setattr(brain_todos, "TODOS_DIR", tmp_path / "todos")
     if request.param == "upsert":
         def create(title, source_key):
-            return brain_todos.upsert(title.lower(), {"title": title}, "", {}, source_key)
+            return brain_todos.upsert(title.lower(), {"title": title, "due": "2099-01-01"}, "", {},
+                                      source_key)
     else:
-        create = brain_todos.create
+        def create(title, source_key):
+            return brain_todos.create(title, source_key=source_key, due="2099-01-01")
+        create.scans_twice = True
     return brain_todos, brain_todos.TODOS_DIR, create, "_iter_todos"
 
 
@@ -28,7 +31,7 @@ def test_concurrent_source_key_creates_one_record(store, monkeypatch):
     first_saving, second_scanned = Event(), Event()
     save, scan = module._save, getattr(module, scan_name)
     second_scans = 0
-    scans_before_write = 2 if create is getattr(module, "create", None) else 1
+    scans_before_write = 2 if getattr(create, "scans_twice", False) else 1
 
     def delayed_save(slug, post):
         if current_thread().name == "first":

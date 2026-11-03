@@ -5,25 +5,14 @@ project the brain out to the world.** One-way renders only: the brain is the
 source of truth, the external surface is a derived view and never writes back.
 See `designs/outlets` in the brain.
 
-## gcal.py: RETIRED 2026-09-23
-The one-way mirror of dated brain todos onto a Google Calendar. **Dead.** Its
-systemd units (`outlet-calendar.timer`, `outlet-calendar.service`,
-`outlet-calendar-watch.service`) are stopped, disabled and removed, and the 34
-brain-created events it had put on the calendar were deleted (backed up to
-`.pulse/state/gcal-retired-2026-09-23.json`, and regenerable anyway: the
-calendar was always derived, the brain was always the source of truth).
-
-Retired because the calendar it existed to feed now lives at
-the command dashboard's `/calendar`, reading the brain directly, and ntfy
-carries the reminders. Two mirrors of the same todos meant two sets of popups
-for one event and a Google dependency in the middle of a system that no longer
-needed one.
-
-**The module is kept, not deleted.** It is the only worked example of the
-Google service-account auth in this repo, which the spend-sheet inlet uses
-too, and it is the thing to read if a calendar mirror is ever wanted again.
-Do not wire it back up without deciding what it is for; the reminder outlet
-already does the job it was written to back up.
+## gcal.py and watch.py: deleted 2026-11-03
+The one-way Google Calendar mirror (`gcal.py`) and its event-driven watcher
+(`watch.py`) were retired 2026-09-23 (units stopped and removed, events backed
+up to `.pulse/state/gcal-retired-2026-09-23.json`) and deleted from the repo on
+2026-11-03. The calendar is the brain's dated todos, read directly by the
+command dashboard's `/calendar` and the app, and ntfy carries the reminders.
+Both files are in git history (last present at `741f596`) if a mirror or a
+worked example of Google service-account auth is ever wanted again.
 
 ## remind.py - dated todos -> ntfy reminders
 The whole reminder system. Todos created anywhere (WhatsApp bot, agents, MCP)

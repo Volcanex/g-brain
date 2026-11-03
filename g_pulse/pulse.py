@@ -55,7 +55,7 @@ PAYLOAD_CHAR_BUDGET = 4000  # ~1k tokens; the payload rides into every session
 
 _PAGE_HEADER = """\
 <!-- pulse page: short-term working memory. One undated snippet per line.
-     has a date -> todo | true now -> here | true always -> the brain.
+     dated -> create_todo (undated is not a todo) | true now -> here | true always -> the brain.
      Appended by pulse_note, compacted daily. Never versioned or committed. -->
 """
 
@@ -157,22 +157,22 @@ def append_page(snippet: str) -> int:
     return _page_snippet_count()
 
 
-def _todos_soon(days: int = 7) -> list[str]:
-    """Open todos starting or due within `days` (incl. overdue), one line each."""
+def _agenda_block() -> str:
+    """The calendar's essentials for a session start: the agenda's own lines
+    (overdue + today, tomorrow, bills of £50+), then the rest of the week.
+    A broken calendar says so instead of vanishing."""
     try:
         import brain_todos
-        horizon = (dt.date.today() + dt.timedelta(days=days)).isoformat()
-        out = []
-        for slug, post in brain_todos.iter_todos():
-            t = brain_todos.serialize(slug, post)
-            if t.get("status") != "open":
-                continue
-            when = str(t.get("due") or t.get("start") or "")[:10]
-            if when and when <= horizon:
-                out.append(f"- {when} {t.get('title', slug)}")
-        return sorted(out)
-    except Exception:
-        return []
+        a = brain_todos.agenda()
+    except Exception as e:  # noqa: BLE001 - the reason is the message
+        return f"Calendar unavailable: {e}"
+    out = list(a["lines"]) or ["Nothing due today or tomorrow."]
+    if a["week"]:
+        out.append("Later this week:")
+        for it in a["week"]:
+            day = dt.date.fromisoformat(it["date"]).strftime("%a %-d %b")
+            out.append(f"- {day}{' ' + it['time'] if it['time'] else ''} {it['title']}")
+    return "Calendar:\n" + "\n".join(out)
 
 
 def _health_line() -> str:
@@ -236,9 +236,7 @@ def composed_payload() -> str:
     except Exception:
         page = ""
     sections.append(page or "(pulse page is empty, nothing recorded yet)")
-    todos = _todos_soon()
-    if todos:
-        sections.append("Dated, next 7 days:\n" + "\n".join(todos))
+    sections.append(_agenda_block())
     health = _health_line()
     if health:
         sections.append(health)
@@ -298,8 +296,8 @@ def pulse_page() -> str:
     todos for the next 7 days, service health, and brief freshness.
 
     This same payload is injected into sessions at start; call this to refresh
-    it mid-session. Routing rule: has a date → todo, true now → pulse,
-    true always → the brain.
+    it mid-session. Routing rule: dated → create_todo (undated is not a
+    todo), true now → pulse, true always → the brain.
     """
     return composed_payload()
 
@@ -310,7 +308,7 @@ def pulse_note(snippet: str) -> dict:
 
     For undated, currently-true facts ("working from the library this week",
     "leaning toward X") heard in passing. Append liberally and tell the user you did. NOT for
-    dated/actionable things (use create_todo) or durable truths (propose a
+    dated things (use create_todo; undated is not a todo) or durable truths (propose a
     brain commit). One sentence, no date, no markdown beyond plain text.
     """
     n = append_page(snippet)

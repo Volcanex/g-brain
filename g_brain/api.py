@@ -525,7 +525,7 @@ def render_orientation(cwd: str = "", limit: int = 12, project: str = "", task: 
     lines.extend(relevant)
 
     lines.append(
-        "\nMemory routing: dated and Gabriel's to do -> `create_todo`.\n"
+        "\nMemory routing: dated and Gabriel's to do -> `create_todo`. Undated is not a todo.\n"
         "Machine or agent work -> `create_ticket`. True now -> `pulse_note`.\n"
         "True always -> `brain_note(text, layer, bar=...)`: design, idea, about or hazard.\n"
         "Capture when a future agent would be worse off without it and it is recorded nowhere else.\n"

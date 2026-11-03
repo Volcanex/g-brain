@@ -55,7 +55,8 @@ def test_ticket_rest_and_isolation(store, tmp_path, monkeypatch):
     monkeypatch.setattr(remind, "STATE", str(tmp_path / "reminders.json"))
     monkeypatch.setattr(remind.alerts, "send", lambda *a, **k: pytest.fail("ticket reached reminders"))
     assert remind.run() == 0
-    assert pulse._todos_soon() == []
+    import brain_todos
+    assert not any(brain_todos.agenda()[k] for k in ("overdue", "today", "tomorrow", "week", "bills"))
     assert item["title"] not in pulse.composed_payload()
     assert client.patch("/api/tickets/" + item["slug"], json={"status": "done"}).json()["status"] == "done"
     assert client.patch("/api/tickets/missing", json={}).status_code == 404

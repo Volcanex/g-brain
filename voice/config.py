@@ -65,6 +65,10 @@ GUESTS_OK = os.environ.get("VOICE_ALLOW_GUESTS", "").strip().lower() not in ("",
 # a tighter model used 3. The loop must have room to reach create_todo, because
 # running out of iterations returns the "got stuck" fallback and writes nothing.
 MAX_TOOL_ITERATIONS = 10
+# Tool calls per user turn, across all rounds. Logs from Nov 2026 show turns
+# of ~30 brain_search calls; past this the tool answers with an error telling
+# the model to stop and answer with what it has.
+MAX_TOOL_CALLS = int(os.environ.get("VOICE_MAX_TOOL_CALLS", "6"))
 
 
 # --- live call (/live), see CLAUDE.md "Live call" ----------------------------

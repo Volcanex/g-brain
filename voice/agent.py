@@ -9,6 +9,7 @@ import base64
 import datetime
 import json
 import logging
+import re
 
 import httpx
 
@@ -35,15 +36,15 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}}}},
     {"type": "function", "function": {
         "name": "list_todos",
-        "description": f"List {config.OWNER_NAME}'s todos. status open|done|all.",
+        "description": f"List {config.OWNER_NAME}'s calendar items (todos). status open|done|all.",
         "parameters": {"type": "object", "properties": {
             "status": {"type": "string"}, "priority": {"type": "string"}, "due_before": {"type": "string"}}}}},
     {"type": "function", "function": {
         "name": "create_todo",
-        "description": "Create an L6 todo. priority P0-P3. due is YYYY-MM-DD only if clearly stated. Always set a category - it picks the calendar colour.",
+        "description": "Create a calendar item (it can be ticked off like a todo). A date is REQUIRED: if none was given, ask 'when?' once; if there still is none, create nothing - it does not belong on the calendar. priority P0-P3. Always set a category - it picks the calendar colour. If the result has duplicate=true it was already there and nothing new was made.",
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string"}, "priority": {"type": "string"},
-            "due": {"type": "string", "description": "All-day deadline date YYYY-MM-DD (no specific time)."},
+            "due": {"type": "string", "description": "REQUIRED. The day, YYYY-MM-DD or a phrase like tomorrow or next Friday. For a timed item give start as well."},
             "body": {"type": "string"},
             "category": {"type": "string", "enum": ["work", "chore", "social", "family", "health", "finance", "study", "deadline", "travel", "personal", "errand"]},
             "remind_min": {"type": "integer", "description": "Minutes before to notify. Night before ~9pm=180, day before 9am=900, a week=10080. Omit for default."},
@@ -52,7 +53,7 @@ TOOLS = [
             "all_day": {"type": "boolean", "description": "true for an all-day/multi-day event (start/end are dates)."},
             "rrule": {"type": "string", "description": "iCalendar recurrence, e.g. FREQ=WEEKLY;BYDAY=MO or FREQ=DAILY. Omit for one-off."},
             "location": {"type": "string"}},
-            "required": ["title", "category"]}}},
+            "required": ["title", "category", "due"]}}},
     {"type": "function", "function": {
         "name": "update_todo",
         "description": "Change one todo or calendar item: title, date, time, priority, star, category, location, repeat. target is its slug or words from its title. date and time take natural phrases (tomorrow, next Friday, 3pm). If the result says ambiguous, ask which one; never guess.",
@@ -94,7 +95,7 @@ TOOLS = [
             "required": ["target"]}}},
     {"type": "function", "function": {
         "name": "pulse_note",
-        "description": f"Append one short undated snippet of current context to the pulse page (short-term memory). Use when {config.OWNER_NAME} states a currently-true fact in passing ('working from the library this week', 'leaning toward X'). Dated/actionable things -> create_todo instead. Confirm you noted it.",
+        "description": f"Append one short undated snippet of current context to the pulse page (short-term memory). Use when {config.OWNER_NAME} states a currently-true fact in passing ('working from the library this week', 'leaning toward X'). Dated things -> create_todo instead; an undated action is not a calendar item. Confirm you noted it.",
         "parameters": {"type": "object", "properties": {
             "snippet": {"type": "string", "description": "One concise sentence, no date."}},
             "required": ["snippet"]}}},
@@ -131,6 +132,68 @@ DISPATCH = {
     "propose_commit": tools.propose_commit,
     "execute_commit": tools.execute_commit,
 }
+
+# ------------------------------------------------------------ turn guards
+# Two rules held in code, not only in the prompt, because logs showed both
+# broken: a turn that ran ~30 searches, and replies that said "Done" / "it's on
+# the calendar" when no tool had run.
+
+BUDGET_ERROR = {"error": (f"Tool limit for this turn reached ({config.MAX_TOOL_CALLS} calls). "
+                          "Do not call more tools. Answer with what you have and say plainly "
+                          "what you could not finish.")}
+
+WRITE_TOOLS = {"create_todo", "update_todo", "reschedule_todo", "mark_done", "mark_failed",
+               "drop_todo", "delete_todo", "pulse_note", "execute_commit"}
+
+
+def budget_left(used: int) -> bool:
+    return used < config.MAX_TOOL_CALLS
+
+
+def succeeded(name, result) -> bool:
+    """Did this tool call actually change what it was asked to change?"""
+    if not isinstance(result, dict) or result.get("error"):
+        return False
+    if name == "delete_todo":
+        return result.get("deleted") is True
+    if name == "create_todo":
+        return bool(result.get("slug"))
+    return result.get("ok", True) is not False
+
+
+_CLAIM = re.compile(
+    r"\b(done|added|logged|created|saved|noted|deleted|removed|dropped|cancell?ed|ticked|"
+    r"marked|rescheduled|updated|on (?:the|your) calendar|put it in|i've (?:got|put|made))\b", re.I)
+_NEGATED = re.compile(r"\b(not|no|nothing|never|haven't|hasn't|didn't|wasn't|isn't|won't|can't|"
+                      r"couldn't|n't|yet)\b|n't\b", re.I)
+
+
+def claims_action(reply: str) -> bool:
+    """True when a sentence of the reply states, unhedged, that a change was made."""
+    for sentence in re.split(r"(?<=[.!?\n])\s+", reply or ""):
+        s = sentence.strip()
+        if not s or s.endswith("?"):
+            continue
+        if _CLAIM.search(s) and not _NEGATED.search(s):
+            return True
+    return False
+
+
+def confirm_guard(reply: str, writes: list) -> str:
+    """Replace a reply that confirms a change no tool made this turn.
+
+    `writes` is [(tool name, result)] for every write tool called this turn.
+    A reply may confirm only when at least one of them succeeded."""
+    if any(succeeded(n, r) for n, r in writes) or not claims_action(reply):
+        return reply
+    errors = [r.get("error") for _, r in writes if isinstance(r, dict) and r.get("error")]
+    log.warning("guard unbacked-confirmation writes=%s reply=%r", [n for n, _ in writes], reply[:200])
+    if errors:
+        return f"That didn't go through, so nothing changed. The tool said: {errors[0]}"
+    if writes:
+        return "Nothing has changed yet - that step needs another go or a yes from you."
+    return "I haven't changed anything - no tool ran for that. Say it again and I'll do it."
+
 
 # sender -> list[message]; in-memory only.
 _HISTORY: dict[str, list] = {}
@@ -241,12 +304,15 @@ def handle(sender: str, text: str, owner: bool = True, images=None) -> str:
         messages[-1] = {"role": "user", "content": content}
 
     called_any = False
+    used, writes = 0, []
     for turn_index in range(config.MAX_TOOL_ITERATIONS):
-        msg = _call_model(messages, use_tools=owner)
+        msg = _call_model(messages, use_tools=owner and budget_left(used))
         messages.append(msg)
         calls = msg.get("tool_calls")
         if not calls:
             reply = msg.get("content") or "..."
+            if owner:
+                reply = confirm_guard(reply, writes)
             if owner and not called_any:
                 # The model settled on an answer without touching a tool. Often
                 # right (a question), sometimes a silent no-op on "remind me to
@@ -259,7 +325,13 @@ def handle(sender: str, text: str, owner: bool = True, images=None) -> str:
             called_any = True
             name = call["function"]["name"]
             raw_args = call["function"].get("arguments")
-            result = _run_tool(name, raw_args, session_id=call["id"], turn_id=turn_index)
+            if budget_left(used):
+                result = _run_tool(name, raw_args, session_id=call["id"], turn_id=turn_index)
+                if name in WRITE_TOOLS:
+                    writes.append((name, result))
+            else:
+                result = dict(BUDGET_ERROR)
+            used += 1
             # One journal line per tool call. Without this a turn where the
             # model answered "Done." having called nothing is indistinguishable
             # from one that wrote a todo -- which is how a week of missed

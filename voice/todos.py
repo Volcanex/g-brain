@@ -406,7 +406,10 @@ def delete_todo(target, confirmed=False):
     if err:
         return err
     if confirmed is not True:
-        return {"ok": True, "deleted": False,
+        # ok is False on purpose: this call changed nothing, and an "ok" here
+        # is what let the model (and the journal) read it as a delete that
+        # happened (Nov 2026, the Rory's birthday duplicates).
+        return {"ok": False, "deleted": False, "needs_confirmation": True,
                 "note": (f"Nothing was deleted yet. Ask whether to delete '{it['title']}' for good. "
                          "After a clear yes, call delete_todo again with confirmed=true."),
                 BLOCKS: [rows_block([it], "Delete this?", actions=True)]}
@@ -429,7 +432,15 @@ def create_todo(**kw):
         if d is None:
             return {"error": f"could not read the date '{due}'; give it as YYYY-MM-DD"}
         kw["due"] = d.isoformat()
+    if kw.get("start") and kw.get("due"):
+        # A timed item is placed by its start; the day alone would be a second date.
+        kw["due"] = None
+    if not (kw.get("due") or kw.get("start") or kw.get("rrule")):
+        return {"error": brain_todos.NO_DATE, "created": False}
     out = tools.create_todo(**kw)
     if isinstance(out, dict) and out.get("slug") and not out.get("error"):
-        out = {**out, BLOCKS: [rows_block([out], "Already there" if out.get("deduped") else "Added")]}
+        again = out.get("deduped") or out.get("duplicate")
+        out = {**out, BLOCKS: [rows_block([out], "Already there" if again else "Added")]}
+        if out.get("duplicate"):
+            out["note"] = "Already on the calendar; nothing new was made. Say it is already there."
     return out

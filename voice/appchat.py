@@ -215,7 +215,7 @@ def stream_turn(session, text, *, budget=None, images=None, files=None, attachme
     if isinstance(content, list) or content != history_text:
         messages[-1] = {"role": "user", "content": content}
 
-    parts, state, used = [], [], []
+    parts, state, used, writes = [], [], [], []
     for turn_index in range(config.MAX_TOOL_ITERATIONS):
         said, calls = "", []
         for kind, val in _stream(messages, model):
@@ -236,11 +236,15 @@ def stream_turn(session, text, *, budget=None, images=None, files=None, attachme
             args = call["function"].get("arguments")
             used.append(name)
             yield {"t": "tool", "name": name}
-            if name in ("show_panel", "attach_blocks", "agent_activity"):
+            if not agent.budget_left(len(used) - 1):
+                result = dict(agent.BUDGET_ERROR)
+            elif name in ("show_panel", "attach_blocks", "agent_activity"):
                 result = _app_tool(name, args, state, activity)
             else:
                 result = agent._run_tool(name, args, session_id=call["id"], turn_id=turn_index,
                                          keep_blocks=True)
+                if name in agent.WRITE_TOOLS:
+                    writes.append((name, result))
                 rows = result.pop(todos.BLOCKS, None) if isinstance(result, dict) else None
                 if rows:
                     # Built by todos.py, not the model: the one place a reply row
@@ -260,7 +264,7 @@ def stream_turn(session, text, *, budget=None, images=None, files=None, attachme
     # The reply is the last text. Text before a tool call was an announcement or
     # said again after it ("the panel is below" twice); it is kept only when
     # nothing followed it.
-    reply = parts[-1] if parts else "..."
+    reply = agent.confirm_guard(parts[-1] if parts else "...", writes)
     history.append({"role": "assistant", "content": reply})
     transcript.append(session, "assistant", reply, blocks=state or None)
     yield {"t": "done", "reply": reply, "blocks": state, "tools": used, "ms": ms()}

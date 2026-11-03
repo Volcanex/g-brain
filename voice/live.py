@@ -857,6 +857,9 @@ class Call:
         if self.sender == "bench" and name not in READ_TOOLS:
             return {"role": "tool", "tool_call_id": call["id"],
                     "content": json.dumps({"error": "read-only session"})}
+        if not agent.budget_left(len(r.tools) - 1):
+            return {"role": "tool", "tool_call_id": call["id"],
+                    "content": json.dumps(agent.BUDGET_ERROR)}
         await self.send({"type": "tool", "name": name, "status": "start"})
         # A barge-in cancels the reply, not the write: the tool and its bookkeeping
         # finish in the background either way.
@@ -1166,7 +1169,7 @@ async def _relay(ws: WebSocket, sender: str, voice: str | None, engine: str, gre
                     + f"It's {now:%A}, {spoken_time(now)}, in London right now. Say the time like that.\n"
                     + ("\n## The conversation so far\n" + history + "\n" if history else ""))
     lock = asyncio.Lock()
-    last_user = {"text": ""}
+    last_user = {"text": "", "calls": 0}
 
     async def send_json(ev):
         async with lock:
@@ -1185,6 +1188,7 @@ async def _relay(ws: WebSocket, sender: str, voice: str | None, engine: str, gre
     def on_turn(role, text):
         if role == "user":
             last_user["text"] = text
+            last_user["calls"] = 0
             talk._TURN[sender] = talk._TURN.get(sender, 0) + 1
         agent._HISTORY[sender].append({"role": role, "content": text})
         _trim(agent._HISTORY[sender])
@@ -1193,6 +1197,9 @@ async def _relay(ws: WebSocket, sender: str, voice: str | None, engine: str, gre
     async def run_tool(name, args):
         if sender == "bench" and name not in READ_TOOLS:
             return {"error": "read-only session"}
+        last_user["calls"] += 1
+        if not agent.budget_left(last_user["calls"] - 1):
+            return dict(agent.BUDGET_ERROR)
         if name == "execute_commit":
             gate = talk._commit_gate(sender, args, last_user["text"])
             if gate:

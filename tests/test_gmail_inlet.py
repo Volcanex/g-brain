@@ -46,10 +46,10 @@ def applier(tmp_path, monkeypatch):
 
 def test_apply_skips_duplicates_creates_provenance_and_acks(applier):
     gmail_apply, todos, posts, acked = applier
-    todos.create("Already open", "P1")
+    todos.create("Already open", "P1", due="2099-01-01")
     made, skipped = gmail_apply.apply({"todos": [
-        {"title": "already open", "source_id": "fake-1", "priority": "P1"},
-        {"title": "Pay rent", "source_id": "fake-2", "priority": "P1", "body": "one fact"}]})
+        {"title": "already open", "source_id": "fake-1", "priority": "P1", "due": "2099-01-01"},
+        {"title": "Pay rent", "source_id": "fake-2", "priority": "P1", "body": "one fact", "due": "2099-01-01"}]})
     assert (made, skipped, acked) == (1, 1, [True])
     assert posts[0]["body"] == "one fact"
     item = next(t for t in todos.list_todos() if t["title"] == "Pay rent")
@@ -59,7 +59,7 @@ def test_apply_skips_duplicates_creates_provenance_and_acks(applier):
 
 def test_retry_of_same_plan_creates_nothing_even_after_completion(applier):
     gmail_apply, todos, posts, acked = applier
-    plan = {"todos": [{"title": "Pay water bill", "priority": "P1", "source_id": "fake-3"}]}
+    plan = {"todos": [{"title": "Pay water bill", "priority": "P1", "source_id": "fake-3", "due": "2099-01-01"}]}
     assert gmail_apply.apply(plan) == (1, 0)
     todos.mark_done(todos.list_todos()[0]["slug"])
     assert gmail_apply.apply(plan) == (0, 1)
@@ -68,8 +68,8 @@ def test_retry_of_same_plan_creates_nothing_even_after_completion(applier):
 
 def test_same_batch_normalized_duplicate_creates_one(applier):
     gmail_apply, todos, posts, acked = applier
-    plan = {"todos": [{"title": r'Pay\nwater bill"', "priority": "P1", "source_id": "fake-4"},
-                      {"title": "Pay water bill", "priority": "P1", "source_id": "fake-5"}]}
+    plan = {"todos": [{"title": r'Pay\nwater bill"', "priority": "P1", "source_id": "fake-4", "due": "2099-01-01"},
+                      {"title": "Pay water bill", "priority": "P1", "source_id": "fake-5", "due": "2099-01-01"}]}
     assert gmail_apply.apply(plan) == (1, 1)
     assert len(posts) == 1 and len(todos.list_todos()) == 1
 
@@ -78,10 +78,10 @@ def test_same_batch_normalized_duplicate_creates_one(applier):
 def test_title_duplicate_completion_and_identical_retry_create_nothing(applier, already_exists):
     gmail_apply, todos, posts, acked = applier
     if already_exists:
-        todos.create("Pay water bill", "P1", source_key="original:fake")
+        todos.create("Pay water bill", "P1", source_key="original:fake", due="2099-01-01")
     plan = {"todos": [
-        {"title": "Pay water bill", "priority": "P1", "source_id": "duplicate-fake-1"},
-        {"title": "pay water bill", "priority": "P1", "source_id": "duplicate-fake-2"},
+        {"title": "Pay water bill", "priority": "P1", "source_id": "duplicate-fake-1", "due": "2099-01-01"},
+        {"title": "pay water bill", "priority": "P1", "source_id": "duplicate-fake-2", "due": "2099-01-01"},
     ]}
     assert gmail_apply.apply(plan) == ((0, 2) if already_exists else (1, 1))
     survivor, = todos.list_todos()
@@ -90,13 +90,13 @@ def test_title_duplicate_completion_and_identical_retry_create_nothing(applier, 
     assert len(todos.list_todos(status="all")) == 1
     assert len(acked) == 2
     for source_id in ("duplicate-fake-1", "duplicate-fake-2"):
-        assert todos.create("Retry with new wording", source_key=f"gmail:{source_id}#1")["deduped"]
+        assert todos.create("Retry with new wording", source_key=f"gmail:{source_id}#1", due="2099-01-01")["deduped"]
 
 
 def test_two_todos_from_one_message_survive(applier):
     gmail_apply, todos, posts, acked = applier
-    plan = {"todos": [{"title": "Catch outward train", "priority": "P1", "source_id": "fake-6"},
-                      {"title": "Catch return train", "priority": "P1", "source_id": "fake-6"}]}
+    plan = {"todos": [{"title": "Catch outward train", "priority": "P1", "source_id": "fake-6", "due": "2099-01-01"},
+                      {"title": "Catch return train", "priority": "P1", "source_id": "fake-6", "due": "2099-01-01"}]}
     assert gmail_apply.apply(plan) == (2, 0)
     assert {t["source_key"] for t in todos.list_todos()} == {"gmail:fake-6#1", "gmail:fake-6#2"}
     assert gmail_apply.apply(plan) == (0, 2)
@@ -105,15 +105,15 @@ def test_two_todos_from_one_message_survive(applier):
 def test_apply_failure_does_not_ack(applier):
     gmail_apply, todos, posts, acked = applier
     with pytest.raises(Exception):
-        gmail_apply.apply({"todos": [{"title": "Deploy workflow failure", "priority": "P1", "source_id": "fake-7"}]})
+        gmail_apply.apply({"todos": [{"title": "Deploy workflow failure", "priority": "P1", "source_id": "fake-7", "due": "2099-01-01"}]})
     assert acked == []
 
 
 def test_missing_source_id_fails_before_any_write_or_ack(applier, monkeypatch, capsys):
     import io
     gmail_apply, todos, posts, acked = applier
-    plan = {"todos": [{"title": "Pay bill", "priority": "P1", "source_id": "fake-8"},
-                      {"title": "Reply to Morgan", "priority": "P1"}]}
+    plan = {"todos": [{"title": "Pay bill", "priority": "P1", "source_id": "fake-8", "due": "2099-01-01"},
+                      {"title": "Reply to Morgan", "priority": "P1", "due": "2099-01-01"}]}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(plan)))
     assert gmail_apply.main() == 1
     assert "source_id" in capsys.readouterr().out
@@ -155,6 +155,6 @@ def test_gate_exposes_stable_message_id_and_reads_without_marking(tmp_path, monk
 def test_double_encoded_json_plan_body_is_normalized(applier):
     gmail_apply, todos, posts, acked = applier
     plan_json = json.dumps({"todos": [{"title": "Call the clinic", "priority": "P1", "source_id": "fake-9",
-                                      "body": r'Bring\r\nID\tand \"card\"'}]})
+                                      "body": r'Bring\r\nID\tand \"card\"', "due": "2099-01-01"}]})
     assert gmail_apply.apply(json.loads(plan_json)) == (1, 0)
     assert todos.list_todos()[0]["body"] == 'Bring\nID\tand "card"'

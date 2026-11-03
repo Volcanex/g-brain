@@ -68,7 +68,8 @@ _LAYER_HELP = (
     "Choose layer: design (your own designs), idea (cross-domain ideas no project owns), "
     "about (facts about Gabriel, preferences, people, decisions and reasons), "
     "hazard (ops hazards and external quirks). Project canon belongs in repo docs. "
-    "Every-run rules belong as g-levels gates. Dated life commitments go to create_todo, "
+    "Every-run rules belong as g-levels gates. Dated life commitments go to create_todo "
+    "(undated is not a todo), "
     "machine or agent work to create_ticket, current state to pulse_note."
 )
 
@@ -1079,7 +1080,8 @@ def brain_note(
 
     Capture freely when a future agent would be worse off without it and it
     is recorded nowhere else. Project canon goes in repo docs, every-run rules
-    in g-levels gates, dated life commitments in create_todo, machine or agent
+    in g-levels gates, dated life commitments in create_todo (undated is not a
+    todo), machine or agent
     work in create_ticket, current state in pulse_note.
 
     Args:

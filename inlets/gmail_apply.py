@@ -7,6 +7,10 @@ JSON instead of spending a turn per todo (every Codex turn re-sends ~20K tokens)
      "snapshot": "one paragraph: threads awaiting a reply, upcoming bills",
      "summary": "one line"}
 
+Every todo is a calendar item and needs `due`. One without a date is not a
+calendar item: the applier drops it and counts it as `undated`, rather than
+letting the API refuse the whole run.
+
 Reads the JSON from stdin. Creates each todo over the local REST API unless an open
 todo has the same title, records the gmail inlet snapshot, and only then acks the
 fetch cursor. Any failure exits 1 before the ack, so the next run sees the same mail.
@@ -40,8 +44,11 @@ def apply(plan):
     seen_keys = {key for todo in existing
                  for key in [todo.get("source_key"), *(todo.get("source_keys") or [])] if key}
     ordinals = {}
-    made = skipped = 0
+    made = skipped = undated = 0
     for todo in todos:
+        if not str(todo.get("due") or "").strip():
+            undated += 1
+            continue
         source_id = str(todo["source_id"]).strip()
         ordinals[source_id] = ordinals.get(source_id, 0) + 1
         source = f"gmail:{source_id}"
@@ -65,7 +72,7 @@ def apply(plan):
             raise RuntimeError(f"todo not created: {title}")
         seen_keys.add(key)
         open_titles[normalized] = result
-        if result.get("deduped"):
+        if result.get("deduped") or result.get("duplicate"):
             skipped += 1
         else:
             made += 1
@@ -74,6 +81,7 @@ def apply(plan):
     from inlets import gmail_fetch
     sys.argv = ["gmail_fetch", "--ack"]
     gmail_fetch.main()
+    apply.undated = undated
     return made, skipped
 
 
@@ -83,7 +91,9 @@ def main():
     except Exception as e:  # noqa: BLE001 - the model needs the reason, whatever it is
         print(f"FAILED, nothing acked: {e!r}")
         return 1
-    print(f"applied: {made} todo(s) created, {skipped} already open; snapshot recorded; acked")
+    undated = getattr(apply, "undated", 0)
+    print(f"applied: {made} todo(s) created, {skipped} already open, {undated} undated dropped; "
+          "snapshot recorded; acked")
     return 0
 
 

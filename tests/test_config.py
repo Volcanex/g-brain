@@ -76,9 +76,9 @@ class ModuleParity(unittest.TestCase):
     def test_instance_env_gives_the_vault_to_a_shell_without_one(self):
         probe = _FRESH + r"""
 import json, brain_capture, brain_miner, brain_status, g_config, inlets.gmail_fetch
-import outlets.remind, outlets.watch, voice.health
+import outlets.remind, voice.health
 print(json.dumps([str(g_config.BRAIN_ROOT), str(brain_capture.BRAIN_ROOT), brain_miner.BRAIN_ROOT,
-                  inlets.gmail_fetch.STATE, outlets.remind.STATE, outlets.watch.TODOS,
+                  inlets.gmail_fetch.STATE, outlets.remind.STATE, str(g_config.TODOS_DIR),
                   voice.health._OUTLET_STATE, str(g_config.BRAIN_MEMORY_DB), brain_status.BRAIN_HOST]))
 """
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as d:

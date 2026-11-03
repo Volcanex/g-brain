@@ -88,7 +88,7 @@ def run():
                 "category": "finance",
                 "due": sub["next_due"],
                 "start": None, "end": None, "rrule": None, "all_day": True,
-                "expires": None,
+                "expires": None, "amount": sub["amount"],
             }, f"""Marked for cancelling, not for funding. Last charge {amount} on
 {sub['last_charged']}; the next one lands about {sub['next_due']} if it is
 still live, which is the date this is set against so the warning arrives
@@ -112,6 +112,8 @@ will keep reporting it until the charges stop appearing in the ledger.
             "start": f"{sub['next_due']}T09:00:00",
             "rrule": RRULE[sub["cycle"]],
             "due": None, "all_day": None, "expires": None,
+            # GBP as a number, so the agenda can pick out bills of £50 or more.
+            "amount": sub["amount"],
         }, f"""Recurring {sub['cycle']} charge, tracked by `gfin subs` and kept in step
 with the ledger: the date corrects itself each time a real charge lands, so it
 is only ever wrong until the next one.

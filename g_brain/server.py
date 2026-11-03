@@ -58,7 +58,7 @@ _POINTER = """\
 # Brain: quick orientation
 
 Memory routing rule:
-- Has a date and is Gabriel's to do -> `create_todo`.
+- Dated and Gabriel's -> `create_todo` (a calendar item). Undated is not a todo.
 - Machine or agent work -> `create_ticket`.
 - True now -> `pulse_note`.
 - True always -> `brain_note(text, layer, bar=...)`.

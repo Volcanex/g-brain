@@ -69,7 +69,7 @@ def test_reschedule_a_due_date(T):
 
 
 def test_done_failed_and_drop(T):
-    a, b, c = _make("Bin day", due="2026-10-24"), _make("Gym class", due="2026-10-24"), _make("Old idea")
+    a, b, c = _make("Bin day", due="2026-10-24"), _make("Gym class", due="2026-10-24"), _make("Old idea", due="2099-01-01")
     assert T.mark_done("bin day")["todo"]["status"] == "done"
     assert T.mark_failed("gym")["todo"]["status"] == "failed"
     assert T.drop_todo("old idea")["todo"]["status"] == "cancelled"
@@ -88,7 +88,7 @@ def test_recurring_marks_one_date_and_refuses_moves(T):
 
 
 def test_ambiguous_target_changes_nothing_and_shows_candidates(T):
-    a, b = _make("Email Sam about rent"), _make("Email Sam the photos")
+    a, b = _make("Email Sam about rent", due="2099-01-01"), _make("Email Sam the photos", due="2099-01-01")
     out = T.mark_done("email sam")
     assert out["ambiguous"] and {c["slug"] for c in out["candidates"]} == {a["slug"], b["slug"]}
     assert len(out[T.BLOCKS][0]["rows"]) == 2
@@ -97,7 +97,7 @@ def test_ambiguous_target_changes_nothing_and_shows_candidates(T):
 
 
 def test_unconfirmed_delete_writes_nothing_and_returns_a_delete_row(T, tmp_path):
-    it = _make("Test delete me")
+    it = _make("Test delete me", due="2099-01-01")
     before = sorted(p.name for p in (tmp_path / "todos").iterdir())
     out = T.delete_todo("delete me")
     assert out["deleted"] is False
@@ -109,7 +109,7 @@ def test_unconfirmed_delete_writes_nothing_and_returns_a_delete_row(T, tmp_path)
 
 
 def test_confirmed_delete_removes_the_todo(T, tmp_path):
-    it = _make("Test delete me")
+    it = _make("Test delete me", due="2099-01-01")
     out = T.delete_todo("delete me", confirmed=True)
     assert out["deleted"] is True and out["todo"]["slug"] == it["slug"]
     assert not (tmp_path / "todos" / f"{it['slug']}.md").exists()
@@ -122,7 +122,7 @@ def test_rest_delete_route(T):
     from fastapi.testclient import TestClient
     app = FastAPI()
     app.include_router(brain_todos.create_router())
-    it = _make("Test delete me")
+    it = _make("Test delete me", due="2099-01-01")
     c = TestClient(app)
     assert c.delete(f"/todos/{it['slug']}").status_code == 200
     assert c.delete(f"/todos/{it['slug']}").status_code == 404
@@ -172,7 +172,7 @@ def test_app_turn_draws_the_delete_row_with_its_action(T, tmp_path, monkeypatch)
     monkeypatch.setattr(transcript, "_TRANSCRIPT_DIR", str(tmp_path / "voice"))
     monkeypatch.setattr(agent, "_HISTORY", {})
     monkeypatch.setattr(appchat, "build_brief", lambda: "(brief stub)")
-    it = _make("Test delete me")
+    it = _make("Test delete me", due="2099-01-01")
     rounds = iter([[("calls", [_call("delete_todo", {"target": it["slug"]})])],
                    [("text", "Tap Delete if you're sure."), ("calls", [])]])
     seen = []
@@ -193,6 +193,6 @@ def test_model_written_rows_still_lose_actions():
 
 def test_whatsapp_path_strips_rows(T):
     from voice import agent
-    it = _make("Strip me")
+    it = _make("Strip me", due="2099-01-01")
     res = agent._run_tool("mark_done", json.dumps({"target": it["slug"]}))
     assert res["ok"] and agent.todos.BLOCKS not in res

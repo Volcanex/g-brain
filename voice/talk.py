@@ -206,7 +206,7 @@ def stream_turn(sender: str, text: str):
               + "\n## Right now (your short-term memory)\n" + build_brief() + SPOKEN)
     messages = [{"role": "system", "content": system}] + history[-agent._MAX_TURNS:]
 
-    spoken, tools_used = [], []
+    spoken, tools_used, writes = [], [], []
     first_ms = None
     for _ in range(config.MAX_TOOL_ITERATIONS):
         buf, said, calls = "", "", []
@@ -234,7 +234,11 @@ def stream_turn(sender: str, text: str):
             yield {"t": "tool", "name": name, "ms": ms()}
             args = call["function"].get("arguments")
             gate = _commit_gate(sender, args, text) if name == "execute_commit" else None
+            if not agent.budget_left(len(tools_used) - 1):
+                gate = dict(agent.BUDGET_ERROR)
             result = gate or agent._run_tool(name, args, session_id=call["id"], turn_id=_TURN[sender])
+            if name in agent.WRITE_TOOLS:
+                writes.append((name, result))
             if name == "propose_commit" and isinstance(result, dict) and result.get("plan_id"):
                 _PROPOSED.setdefault(sender, {})[result["plan_id"]] = _TURN[sender]
             elif name == "execute_commit" and gate is None:
@@ -250,6 +254,12 @@ def stream_turn(sender: str, text: str):
         yield {"t": "s", "text": s, "ms": ms()}
 
     reply = " ".join(spoken) or "..."
+    guarded = agent.confirm_guard(reply, writes)
+    if guarded != reply:
+        # Already spoken, so it cannot be unsaid: say the correction after it.
+        spoken.append(guarded)
+        yield {"t": "s", "text": guarded, "ms": ms()}
+        reply = " ".join(spoken)
     history.append({"role": "assistant", "content": reply})
     transcript.append(sender, "assistant", reply)
     agent.log.info("talk sender=%s small=%s tools=%s first_sentence_ms=%s total_ms=%d",

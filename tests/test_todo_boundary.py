@@ -16,7 +16,7 @@ def todos(tmp_path, monkeypatch):
 
 def test_normalization_and_provenance(todos):
     item = todos.create(r'Book\n the\t dentist"', "P2", body=r'Bring\r\nID\tand \"card\"',
-                        requester="gabriel", composer="agent", source="mcp")
+                        requester="gabriel", composer="agent", source="mcp", due="2099-01-01")
     assert item["title"] == "Book the dentist"
     assert item["body"].strip() == 'Bring\nID\tand "card"'
     assert item["provenance"] == {"requester": "gabriel", "composer": "agent", "source": "mcp"}
@@ -57,16 +57,16 @@ def test_owner_action_accepts(todos, title, body, requester):
 ])
 def test_owner_action_rejects(todos, title, body, requester, route):
     with pytest.raises(ValueError, match=route):
-        todos.create(title, "P2", body=body, requester=requester)
+        todos.create(title, "P2", body=body, requester=requester, due="2099-01-01")
     assert list(todos.iter_todos()) == []
 
 
 def test_idempotency_includes_closed_and_writes_nothing(todos):
-    first = todos.create("Pay the water bill", "P1", requester="pulse.gmail.distil", source_key="mail:fake#1")
+    first = todos.create("Pay the water bill", "P1", requester="pulse.gmail.distil", source_key="mail:fake#1", due="2099-01-01")
     todos.mark_done(first["slug"])
     path = todos.TODOS_DIR / (first["slug"] + ".md")
     before = (path.read_bytes(), path.stat().st_mtime_ns)
-    result = todos.create("Pay water", "P1", source_key="mail:fake#1")
+    result = todos.create("Pay water", "P1", source_key="mail:fake#1", due="2099-01-01")
     assert result["deduped"] is True and result["status"] == "done"
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
     assert len(list(todos.iter_todos())) == 1
@@ -74,26 +74,26 @@ def test_idempotency_includes_closed_and_writes_nothing(todos):
 
 def test_hygiene(todos):
     with pytest.raises(ValueError, match="one short line"):
-        todos.create("Book appointment", "P1", body="a" * 801, requester="agent")
-    assert todos.create("Book appointment", "P1", body="a" * 801, requester="gabriel")
+        todos.create("Book appointment", "P1", body="a" * 801, requester="agent", due="2099-01-01")
+    assert todos.create("Book appointment", "P1", body="a" * 801, requester="gabriel", due="2099-01-01")
 
 
 def test_rest_and_mcp_contract(todos):
     app = FastAPI()
     app.include_router(todos.create_router(), prefix="/api")
     client = TestClient(app)
-    item = client.post("/api/todos", json={"title": "Book appointment", "priority": "P1"}).json()
+    item = client.post("/api/todos", json={"title": "Book appointment", "priority": "P1", "due": "2099-01-01"}).json()
     assert item["provenance"] == dict.fromkeys(("requester", "composer", "source"), "unknown")
-    assert client.post("/api/todos", json={"title": "Refactor sample auth", "priority": "P1"}).status_code == 400
+    assert client.post("/api/todos", json={"title": "Refactor sample auth", "priority": "P1", "due": "2099-01-01"}).status_code == 400
     payload = {"title": r"Pay\nwater", "priority": "P1", "requester": "pulse.gmail.distil",
                "composer": "pulse.gmail.distil", "source": "gmail:<fake@example.invalid>",
-               "source_key": "gmail:fake#1"}
+               "source_key": "gmail:fake#1", "due": "2099-01-01"}
     made = client.post("/api/todos", json=payload).json()
     assert made["title"] == "Pay water"
     assert client.post("/api/todos", json=payload).json()["deduped"] is True
     with pytest.raises(TypeError):
-        todos.create_todo("Book appointment", "P1")
-    assert todos.create_todo("Book appointment", "P1", requester="gabriel")["provenance"]["source"] == "mcp"
+        todos.create_todo("Book appointment", "P1", due="2099-01-01")
+    assert todos.create_todo("Book appointment", "P1", requester="gabriel", due="2099-01-02")["provenance"]["source"] == "mcp"
     assert client.patch("/api/todos/" + item["slug"], json={"title": r'Call\nclinic"'}).json()["title"] == "Call clinic"
 
 
@@ -108,7 +108,7 @@ def test_expiry_reads_without_mutation(todos, monkeypatch):
     assert todos.list_todos() == []
     assert len(todos.list_todos(status="expired")) == 1
     assert todos.occurrences(old, today.isoformat(), "live") == []
-    assert pulse._todos_soon() == []
+    assert todos.agenda()["overdue"] == [] and "Book optician" not in pulse.composed_payload()
     assert path.read_bytes() == before
     monkeypatch.setattr("sys.argv", ["brain_todos.py", "--dry-run"])
     assert todos.main() == 0
@@ -118,7 +118,8 @@ def test_expiry_reads_without_mutation(todos, monkeypatch):
 def test_legacy_expiry_and_priority(todos):
     old = (dt.date.today() - dt.timedelta(days=90)).isoformat()
     for slug, priority, rrule in [("old", "P2", None), ("vital", "P0", None), ("habit", "P2", "FREQ=DAILY")]:
-        todos._save(slug, frontmatter.Post("", title=slug, priority=priority, created=old, status="open", rrule=rrule))
+        todos._save(slug, frontmatter.Post("", title=slug, priority=priority, created=old, status="open",
+                                           due=old, rrule=rrule))
     assert todos.serialize("old", todos.get("old"))["status"] == "expired"
     assert {t["slug"] for t in todos.list_todos()} == {"vital", "habit"}
 
@@ -127,7 +128,7 @@ def test_upsert_uses_boundary(todos):
     provenance = {"requester": "agent", "composer": "agent", "source": "test"}
     with pytest.raises(ValueError, match="create_ticket"):
         todos.upsert("sample", {"title": "Refactor sample auth"}, "", provenance)
-    assert todos.upsert("sample", {"title": r'Book\nclinic"'}, r'Bring\nID', provenance)["title"] == "Book clinic"
+    assert todos.upsert("sample", {"title": r'Book\nclinic"', "due": "2099-01-01"}, r'Bring\nID', provenance)["title"] == "Book clinic"
     assert todos.get("sample").content == "Bring\nID"
 
 
@@ -152,12 +153,12 @@ def test_public_upsert_rechecks_legacy_wording(todos):
 
 def test_voice_records_owner_and_event(todos):
     from voice import tools
-    item = tools.create_todo("Call the clinic", turn_id="fake-turn")
+    item = tools.create_todo("Call the clinic", turn_id="fake-turn", due="2099-01-01")
     assert item["provenance"] == {"requester": "gabriel", "composer": "agent", "source": "voice:fake-turn"}
-    other = tools.create_todo("Book appointment")
+    other = tools.create_todo("Book appointment", due="2099-01-01")
     assert other["provenance"]["source"].startswith("voice:")
     with pytest.raises(ValueError, match="brain_alert"):
-        tools.create_todo("Fix deploy workflow failure in sample-repo")
+        tools.create_todo("Fix deploy workflow failure in sample-repo", due="2099-01-01")
 
 
 def test_voice_handle_dispatch_records_call_and_turn(todos, tmp_path, monkeypatch):
@@ -169,7 +170,7 @@ def test_voice_handle_dispatch_records_call_and_turn(todos, tmp_path, monkeypatc
     monkeypatch.setattr(agent, "build_brief", lambda: "Invented brief")
     rounds = iter([
         {"tool_calls": [{"id": "fake-text-call", "function": {
-            "name": "create_todo", "arguments": json.dumps({"title": "Call the clinic"})}}]},
+            "name": "create_todo", "arguments": json.dumps({"title": "Call the clinic", "due": "2099-01-01"})}}]},
         {"content": "Saved."},
     ])
     monkeypatch.setattr(agent, "_call_model", lambda *a, **k: next(rounds))
@@ -190,7 +191,7 @@ def test_voice_stream_dispatch_records_call_and_turn(todos, tmp_path, monkeypatc
     monkeypatch.setattr(talk, "build_brief", lambda: "Invented brief")
     rounds = iter([
         [("calls", [{"id": "fake-spoken-call", "function": {
-            "name": "create_todo", "arguments": json.dumps({"title": "Call the clinic"})}}])],
+            "name": "create_todo", "arguments": json.dumps({"title": "Call the clinic", "due": "2099-01-01"})}}])],
         [("text", "Saved."), ("calls", [])],
     ])
     monkeypatch.setattr(talk, "_stream_model", lambda *a, **k: iter(next(rounds)))
@@ -219,14 +220,14 @@ def test_expiry_today_and_all_read_surfaces(todos):
 
 
 def test_patches_cannot_bypass_owner_boundary(todos):
-    item = todos.create("Book appointment", "P1")
+    item = todos.create("Book appointment", "P1", due="2099-01-01")
     with pytest.raises(ValueError, match="create_ticket"):
         todos._update(item["slug"], {"title": "Refactor sample auth"})
     assert todos.get(item["slug"])["title"] == "Book appointment"
 
 
 def test_source_key_cannot_relocate_an_existing_todo(todos):
-    item = todos.create("Pay bill", "P1", source_key="fake:bill")
+    item = todos.create("Pay bill", "P1", source_key="fake:bill", due="2099-01-01")
     result = todos.upsert("new-slug", {"title": "Pay bill again"}, "", {}, source_key="fake:bill")
     assert result["deduped"] and result["slug"] == item["slug"]
     assert not (todos.TODOS_DIR / "new-slug.md").exists()
@@ -235,7 +236,7 @@ def test_source_key_cannot_relocate_an_existing_todo(todos):
 def test_legacy_sweep_cannot_write_outside_boundary(todos, monkeypatch, capsys):
     import json
     old = (dt.date.today() - dt.timedelta(days=2)).isoformat()
-    item = todos.create("Collect parcel", "P2", expires=old)
+    item = todos.create("Collect parcel", "P2", expires=old, due="2099-01-01")
     path = todos.TODOS_DIR / (item["slug"] + ".md")
     before = path.read_bytes()
     report = todos.expire_stale(apply=True)
@@ -264,4 +265,4 @@ def test_legacy_todo_stays_closable(todos, tmp_path):
     ("Reply to a client about the PR and brand audit", "", "pulse.gmail.distil"),
 ])
 def test_real_shaped_owner_actions_pass(todos, title, body, requester):
-    assert todos.create(title, body=body, requester=requester)["title"]
+    assert todos.create(title, body=body, requester=requester, due="2099-01-01")["title"]

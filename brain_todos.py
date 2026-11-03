@@ -1,4 +1,9 @@
-"""brain-todos: TODO list as a first-class kind in the brain.
+"""brain-todos: Gabriel's calendar, one item per dated commitment.
+
+The store is still called "todos" (no API renames), but every item is a
+calendar item: it has a due date, a start or a recurrence. Something with no
+date is not a calendar item and is refused at create; it belongs nowhere, or
+in the pulse page if it is only true now. Items can be ticked off like todos.
 
 Todos live in ``todos/`` parallel to designs/, findings/, etc. They get
 their own MCP tools (create/list/update/mark_done) and REST endpoints
@@ -38,14 +43,17 @@ VALID_STATUSES = {"open", "done", "failed", "blocked", "cancelled", "expired"}
 # The statuses that close a todo by hand. Setting one stamps `resolved_on`.
 RESOLVED_STATUSES = {"done", "failed", "cancelled"}
 
-# How long an open TODO stays live before the sweep retires it. Most TODOs
-# here are voice-captured reminders ("remind me to X"), which are perishable:
-# 77 were open on 2026-09-08 against 30 ever done, 24 of them from June/July.
-# Nothing closed the loop, so the list stopped being readable. Real work is
-# P0/P1 and never auto-expires; a recurring TODO never expires either.
-EXPIRY_DAYS = {"P0": None, "P1": None, "P2": 60, "P3": 21}
-# A low-priority dated thing still open a month past its date is dead.
+# Which priorities may rot. Every item has a date now (2026-11-03), so the
+# only expiry left is the dated one: a low-priority thing still open a month
+# past its date is dead. P0/P1 never expire (overdue is the loudest signal a
+# list has) and a recurring item never expires either.
+EXPIRING_PRIORITIES = {"P2", "P3"}
 EXPIRY_AFTER_DUE_DAYS = 30
+
+# The refusal an agent sees when it tries to put an undated thing on the
+# calendar. Worded so the agent knows what to do next.
+NO_DATE = ("No date. Ask Gabriel when; if there isn't one, it doesn't belong on the "
+           "calendar. Give due (YYYY-MM-DD), start (ISO datetime) or rrule.")
 
 mcp = FastMCP("brain-todos")
 
@@ -428,6 +436,7 @@ def _serialize(slug: str, post: frontmatter.Post) -> dict[str, Any]:
         "all_day": md.get("all_day"),
         "rrule": md.get("rrule") or None,
         "location": md.get("location") or None,
+        "amount": _amount(md.get("amount")),
         "expires": md.get("expires") or None,
         "resolved_on": str(md["resolved_on"]) if md.get("resolved_on") else None,
         "body": post.content,
@@ -440,6 +449,16 @@ def _serialize(slug: str, post: frontmatter.Post) -> dict[str, Any]:
         if out[_k] is not None:
             out[_k] = str(out[_k])
     return out
+
+
+def _amount(raw):
+    """A bill's value in GBP as a number, or None."""
+    if raw is None or raw == "":
+        return None
+    try:
+        return round(float(raw), 2)
+    except (TypeError, ValueError):
+        return None
 
 
 def _iter_todos():
@@ -478,26 +497,20 @@ def _filter(
 
 
 def _default_expires(priority: str, due: str | None, rrule: str | None) -> str | None:
-    """When an open TODO should retire itself if nothing happens to it.
+    """When an open item should retire itself if nothing happens to it.
 
-    Explicit beats derived; a recurring TODO never expires; a dated one dies a
-    month after its date; otherwise priority decides.
+    Explicit beats derived; a recurring item never expires; a low-priority
+    dated one dies a month after its date. P0/P1 never expire: a P0 a month
+    past its date is *overdue*, the loudest thing a list can say. Undated
+    items no longer exist, so there is no undated branch.
     """
-    if rrule:
+    if rrule or priority not in EXPIRING_PRIORITIES or not due:
         return None
-    days = EXPIRY_DAYS.get(priority)
-    # Priority wins over the date. A P0 a month past its due date is *overdue*,
-    # which is the loudest thing a list can say - retiring it would delete the
-    # signal. Only things already marked as low-stakes are allowed to rot.
-    if not days:
+    try:
+        return (dt.date.fromisoformat(str(due))
+                + dt.timedelta(days=EXPIRY_AFTER_DUE_DAYS)).isoformat()
+    except ValueError:
         return None
-    if due:
-        try:
-            return (dt.date.fromisoformat(str(due))
-                    + dt.timedelta(days=EXPIRY_AFTER_DUE_DAYS)).isoformat()
-        except ValueError:
-            return None
-    return (dt.date.today() + dt.timedelta(days=days)).isoformat()
 
 
 def _effective_post(post, on=None):
@@ -506,15 +519,8 @@ def _effective_post(post, on=None):
     md = post.metadata
     if str(md.get("status") or "open") != "open":
         return post
-    exp = md.get("expires")
-    if not exp:
-        exp = _default_expires(str(md.get("priority") or "P2"), md.get("due"), md.get("rrule"))
-        days = EXPIRY_DAYS.get(str(md.get("priority") or "P2"))
-        if exp and days and not md.get("due") and md.get("created"):
-            try:
-                exp = (dt.date.fromisoformat(str(md["created"])) + dt.timedelta(days=days)).isoformat()
-            except ValueError:
-                pass
+    exp = md.get("expires") or _default_expires(
+        str(md.get("priority") or "P2"), md.get("due"), md.get("rrule"))
     if exp:
         post["expires"] = str(exp)
         try:
@@ -546,7 +552,7 @@ def update(slug, fields):
 
 def delete(slug):
     """Remove a todo for good, as the REST DELETE does. The vault's git history
-    keeps the file, and the calendar outlet drops its mirrored event as an orphan."""
+    keeps the file."""
     with store_lock(TODOS_DIR):
         post = _load(slug)
         _path_for(slug).unlink()
@@ -580,12 +586,14 @@ def _upsert(slug, fields, body, provenance, source_key=None, lifecycle=False):
     existing = _by_source_key(source_key)
     if existing and existing["slug"] != slug:
         return {**existing, "deduped": True}
+    is_new = False
     try:
         post = get(slug)
         unchanged = (fields.get("title", post.get("title")) == post.get("title")
                      and body == post.content)
     except FileNotFoundError:
         unchanged = False
+        is_new = True
         post = frontmatter.Post("", kind="todo", permalink=f"brain/todos/{slug}",
                                 status="open", priority="P2", created=today())
     for key, value in fields.items():
@@ -607,6 +615,8 @@ def _upsert(slug, fields, body, provenance, source_key=None, lifecycle=False):
             post[key] = value
     title, body, provenance = _prepare(post.get("title"), body, provenance,
                                       policy=not (lifecycle and unchanged))
+    if is_new and not has_date(post.metadata):
+        raise ValueError(NO_DATE)
     post.metadata.setdefault("priority", "P2")
     post.metadata.setdefault("status", "open")
     if post.get("priority") not in VALID_PRIORITIES:
@@ -643,28 +653,89 @@ def create(
     composer: str | None = None,
     source: str | None = None,
     source_key: str | None = None,
+    amount: float | None = None,
 ) -> dict[str, Any]:
-    """Create an owner action, recording origin and deduping all statuses."""
+    """Create a dated calendar item, recording origin. Refuses an item with no
+    due, start or rrule (NO_DATE). Dedupes by source_key across all statuses,
+    and by normalised title + date among open items (returns duplicate=True)."""
     with store_lock(TODOS_DIR):
         return _create(title, priority, due, relates_to, body, summary, category, remind_min,
                        reminders, vital, urgent, start, end, all_day, rrule, location, expires,
-                       requester, composer, source, source_key)
+                       requester, composer, source, source_key, amount)
+
+
+def has_date(md) -> bool:
+    """True when an item (frontmatter or serialized dict) is on the calendar."""
+    return bool(md.get("due") or md.get("start") or md.get("rrule"))
+
+
+def _check_date_value(due, start):
+    """Refuse a date that will not parse, so the calendar never holds a dud."""
+    try:
+        if due:
+            dt.date.fromisoformat(str(due)[:10])
+        if start:
+            dt.datetime.fromisoformat(str(start))
+    except ValueError:
+        raise ValueError("Unreadable date. Give due as YYYY-MM-DD or start as an ISO datetime.")
+
+
+_PUNCT = re.compile(r"[^\w\s]")
+
+
+def _norm_title(title) -> str:
+    """Title compared for duplicates: case, apostrophes, punctuation and
+    spacing ignored, so "Rory's birthday" == "Rorys Birthday"."""
+    s = str(title or "").casefold().replace("\u2019", "'")
+    s = _PUNCT.sub("", s)
+    return " ".join(s.split())
+
+
+def _norm_rrule(rule) -> str:
+    return ";".join(sorted(str(rule).upper().replace("RRULE:", "").replace(" ", "").split(";")))
+
+
+def _date_key(md):
+    """What makes two open items the same calendar entry besides the title:
+    the rrule for a recurring item, the day for a one-off."""
+    if md.get("rrule"):
+        return ("rrule", _norm_rrule(md["rrule"]))
+    return ("day", str(md.get("start") or md.get("due") or "")[:10])
+
+
+def find_duplicate(title, due=None, start=None, rrule=None):
+    """The open item with the same normalised title on the same date (or with
+    the same title and rrule, when recurring), else None."""
+    want = (_norm_title(title), _date_key({"due": due, "start": start, "rrule": rrule}))
+    for slug, post in _iter_todos():
+        md = post.metadata
+        if str(md.get("status") or "open") != "open":
+            continue
+        if (_norm_title(md.get("title")), _date_key(md)) == want:
+            return _serialize(slug, post)
+    return None
 
 
 def _create(title, priority, due, relates_to, body, summary, category, remind_min,
             reminders, vital, urgent, start, end, all_day, rrule, location, expires,
-            requester, composer, source, source_key):
+            requester, composer, source, source_key, amount=None):
     existing = _by_source_key(source_key)
     if existing:
         return {**existing, "deduped": True}
     title, body, provenance = _prepare(title, body, provenance_for(requester, composer, source))
+    if not (due or start or rrule):
+        raise ValueError(NO_DATE)
+    _check_date_value(due, start)
     if priority not in VALID_PRIORITIES:
         raise ValueError(f"priority must be one of {sorted(VALID_PRIORITIES)}")
+    same = find_duplicate(title, due, start, rrule)
+    if same:
+        return {**same, "duplicate": True}
     fields = dict(title=title, priority=priority, due=due, relates_to=relates_to,
                   summary=summary or title, category=category, remind_min=remind_min,
                   reminders=[int(m) for m in reminders] if reminders else None,
                   vital=vital, urgent=urgent, start=start, end=end, all_day=all_day,
-                  rrule=rrule, location=location,
+                  rrule=rrule, location=location, amount=_amount(amount),
                   expires=expires if expires is not None else _default_expires(priority, due, rrule))
     return _upsert(_allocate_slug(_slugify(title)), fields, body, provenance, source_key)
 
@@ -765,11 +836,19 @@ def _update_locked(slug, fields):
         else:
             post.metadata.pop("resolved_on", None)
 
+    was_dated = has_date(post.metadata)
     for k, v in fields.items():
         if v is None or (k in ("urgent", "vital") and v is False):
             post.metadata.pop(k, None)
         else:
             post[k] = v
+    # A calendar item keeps a date. Moving it is fine; clearing the last one
+    # is not (undated legacy items can still be closed, so only a change that
+    # takes a date away is refused).
+    if was_dated and not has_date(post.metadata):
+        raise ValueError("Cannot clear the date: every calendar item needs one. "
+                         "Reschedule it, or drop it if it no longer matters.")
+    _check_date_value(post.metadata.get("due"), post.metadata.get("start"))
 
     if body is not None:
         post.content = str(body).rstrip() + "\n"
@@ -819,13 +898,24 @@ def create_todo(
     composer: str = "agent",
     source: str = "mcp",
     source_key: str | None = None,
+    amount: float | None = None,
 ) -> dict:
-    """Create a TODO note under todos/<slug>.md.
+    """Create a calendar item for Gabriel (stored under todos/<slug>.md).
+
+    Every calendar item has a date: pass due, start or rrule. An item with no
+    date is refused. If Gabriel gave none, ask him when; if there isn't one,
+    it does not belong on the calendar. If an open item already has the same
+    title on the same date (or the same title and rrule), that item comes back
+    with duplicate=true and nothing new is made. Items can be ticked off with
+    mark_done.
 
     Args:
-      title: human-readable task title.
+      title: human-readable title.
       priority: one of P0, P1, P2, P3.
-      due: optional ISO date (YYYY-MM-DD).
+      due: ISO date (YYYY-MM-DD) for an all-day item or deadline.
+      start: ISO datetime for a timed item (use instead of due when a time is known).
+      rrule: iCalendar recurrence, e.g. FREQ=YEARLY, with due or start as the first day.
+      amount: a bill's value in GBP, for finance items.
       relates_to: optional list of permalinks this TODO relates to.
       body: optional markdown body.
       category: optional category driving the calendar colour AND the automatic
@@ -856,7 +946,8 @@ def create_todo(
     return create(title, priority, due, relates_to, body,
                   requester=requester, composer=composer, source=source, source_key=source_key,
                   category=category, remind_min=remind_min, reminders=reminders, vital=vital,
-                  start=start, end=end, all_day=all_day, rrule=rrule, location=location, expires=expires)
+                  start=start, end=end, all_day=all_day, rrule=rrule, location=location, expires=expires,
+                  amount=amount)
 
 
 @mcp.tool()
@@ -866,7 +957,8 @@ def list_todos(
     due_before: str | None = None,
     relates_to: str | None = None,
 ) -> list[dict]:
-    """List TODOs. Defaults to status=open; pass status='all' to include done."""
+    """List calendar items. Defaults to status=open; pass status='all' to include done.
+    For "what's coming up", prefer `agenda`."""
     out = []
     for slug, post in _filter(_iter_todos(), status, priority, due_before, relates_to):
         out.append(_serialize(slug, post))
@@ -884,11 +976,12 @@ def update_todo(
     summary: str | None = None,
     body: str | None = None,
 ) -> dict:
-    """Patch frontmatter fields and/or body on a TODO.
+    """Patch fields and/or body on a calendar item.
 
     `permalink` accepts a bare slug or full permalink. Pass `body=...`
     to replace the markdown body. Pass `status='done'` to complete.
     Only fields you pass are touched; omitted fields are left as-is.
+    The date can be moved but never cleared.
     """
     slug = _resolve_slug(permalink)
     fields = {
@@ -903,7 +996,7 @@ def update_todo(
 
 @mcp.tool()
 def mark_done(permalink: str) -> dict:
-    """Shortcut: set a TODO's status to done."""
+    """Shortcut: tick a calendar item off (status done)."""
     slug = _resolve_slug(permalink)
     return _mark_done(slug)
 
@@ -935,6 +1028,7 @@ class _TodoCreate(BaseModel):
     composer: str | None = None
     source: str | None = None
     source_key: str | None = None
+    amount: float | None = None
 
 
 class _TodoPatch(BaseModel):
@@ -1110,6 +1204,154 @@ def occurrences(date_from: str, date_to: str, status: str = "open") -> list[dict
     return out
 
 
+# ------------------------------------------------------------------ agenda
+# What Gabriel needs to see and nothing else: overdue, today, tomorrow, the
+# rest of the week, and bills of £50 or more. The `lines` are the whole
+# summary in at most three plain sentences, built here without a model, so the
+# pulse, the app and voice all say the same thing.
+
+BILL_MIN_GBP = 50
+_MAX_NAMES = 4
+
+
+def _agenda_item(slug, md, day, time_s, all_day):
+    return {"slug": slug, "title": str(md.get("title") or slug), "date": day.isoformat(),
+            "time": time_s, "all_day": all_day, "category": md.get("category") or None,
+            "amount": _amount(md.get("amount")), "recurring": bool(md.get("rrule"))}
+
+
+def _next_on_calendar(md, on):
+    """(date, "HH:MM"|None, all_day) for an open item: its own day for a
+    one-off (which may be in the past), the next unticked occurrence on or
+    after `on` for a recurring one. None when it has no usable date."""
+    raw = str(md.get("start") or md.get("due") or "")
+    if not raw:
+        return None
+    timed = "T" in raw
+    try:
+        first = dt.datetime.fromisoformat(raw) if timed else dt.datetime.combine(
+            dt.date.fromisoformat(raw[:10]), dt.time(0, 0))
+    except ValueError:
+        return None
+    all_day = bool(md.get("all_day")) or not timed or (
+        first.hour == 0 and first.minute == 0 and not md.get("end"))
+    time_s = None if all_day else first.strftime("%H:%M")
+    if not md.get("rrule"):
+        return first.date(), time_s, all_day
+    marked = {str(d) for d in (md.get("done_dates") or []) + (md.get("failed_dates") or [])}
+    horizon = dt.datetime.combine(on + dt.timedelta(days=800), dt.time(23, 59))
+    for occ in expand_rrule(first, md["rrule"], horizon):
+        if occ.date() >= on and occ.date().isoformat() not in marked:
+            return occ.date(), time_s, all_day
+    return None
+
+
+def _say(item):
+    t = item["title"]
+    if item["time"]:
+        t = f"{item['time']} {t}"
+    return t
+
+
+def _names(items, with_day=False):
+    parts = []
+    for it in items[:_MAX_NAMES]:
+        s = _say(it)
+        if with_day:
+            s += " " + dt.date.fromisoformat(it["date"]).strftime("%a %-d %b")
+        parts.append(s)
+    more = len(items) - _MAX_NAMES
+    return "; ".join(parts) + (f"; and {more} more" if more > 0 else "")
+
+
+def _bill_text(it):
+    day = dt.date.fromisoformat(it["date"]).strftime("%a %-d %b")
+    title = it["title"]
+    money = f"£{it['amount']:.2f}"
+    if money not in title:
+        title = f"{title} {money}"
+    return f"{title} {day}"
+
+
+def agenda(on: str | None = None) -> dict:
+    """The agenda contract served at GET /api/todos/agenda and the `agenda` tool.
+
+    {generated, overdue, today, tomorrow, week (day+2..day+7), bills (finance,
+    next 7 days, amount >= 50), lines (<= 3 plain lines)}. A store that cannot
+    be read says so in `lines`; it never comes back as a quiet empty list.
+    """
+    now = dt.datetime.now().astimezone()
+    day0 = dt.date.fromisoformat(on) if on else dt.date.today()
+    out = {"generated": now.isoformat(timespec="seconds"), "overdue": [], "today": [],
+           "tomorrow": [], "week": [], "bills": [], "lines": []}
+    try:
+        if not TODOS_DIR.is_dir():
+            raise FileNotFoundError(f"{TODOS_DIR} is missing")
+        paths = sorted(TODOS_DIR.glob("*.md"))
+        posts, bad = [], 0
+        for p in paths:
+            try:
+                posts.append((p.stem, _effective_post(frontmatter.load(p), on=day0.isoformat())))
+            except Exception:
+                bad += 1
+        if paths and not posts:
+            raise RuntimeError(f"none of {len(paths)} items could be parsed")
+    except Exception as e:
+        out["lines"] = [f"Calendar unavailable: {e}"]
+        return out
+    week_end = day0 + dt.timedelta(days=7)
+    for slug, post in posts:
+        md = post.metadata
+        if str(md.get("status") or "open") != "open":
+            continue
+        when = _next_on_calendar(md, day0)
+        if when is None:
+            continue
+        d, time_s, all_day = when
+        item = _agenda_item(slug, md, d, time_s, all_day)
+        gap = (d - day0).days
+        if gap < 0:
+            out["overdue"].append(item)
+        elif gap == 0:
+            out["today"].append(item)
+        elif gap == 1:
+            out["tomorrow"].append(item)
+        elif gap <= 7:
+            out["week"].append(item)
+        if (str(md.get("category") or "").lower() == "finance" and day0 <= d <= week_end
+                and item["amount"] is not None and item["amount"] >= BILL_MIN_GBP):
+            out["bills"].append(item)
+    order = lambda i: (i["date"], i["time"] is None, i["time"] or "", i["title"])  # noqa: E731
+    for key in ("overdue", "today", "tomorrow", "week", "bills"):
+        out[key].sort(key=order)
+    lines = []
+    if out["overdue"] or out["today"]:
+        bits = []
+        if out["today"]:
+            bits.append("Today: " + _names(out["today"]) + ".")
+        if out["overdue"]:
+            bits.append("Overdue: " + _names(out["overdue"], with_day=True) + ".")
+        lines.append(" ".join(bits))
+    if out["tomorrow"]:
+        lines.append("Tomorrow: " + _names(out["tomorrow"]) + ".")
+    if out["bills"]:
+        shown = "; ".join(_bill_text(b) for b in out["bills"][:_MAX_NAMES])
+        more = len(out["bills"]) - _MAX_NAMES
+        lines.append("Bills this week: " + shown + (f"; and {more} more" if more > 0 else "") + ".")
+    if bad and len(lines) < 3:
+        lines.append(f"Calendar partly unreadable: {bad} item(s) could not be parsed.")
+    out["lines"] = lines[:3]
+    return out
+
+
+@mcp.tool(name="agenda")
+def agenda_tool() -> dict:
+    """Gabriel's agenda: overdue, today, tomorrow, the rest of the week, and
+    bills of £50+ in the next 7 days, plus up to three plain summary lines.
+    Use this for "what's on" questions instead of listing every item."""
+    return agenda()
+
+
 def create_router() -> APIRouter:
     r = APIRouter(prefix="/todos", tags=["todos"])
 
@@ -1138,6 +1380,10 @@ def create_router() -> APIRouter:
             return occurrences(lo, hi, status)
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+    @r.get("/agenda")
+    async def agenda_():
+        return agenda()
 
     @r.get("/{slug}")
     async def get_(slug: str):
