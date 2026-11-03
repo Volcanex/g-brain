@@ -129,7 +129,7 @@ def test_agenda_sections_lines_and_bills(todos, client):
     assert third.startswith("This week: ") and "Dissertation" in third and "Anniversary" in third
     assert third.index("Anniversary") < third.index("Dissertation")   # day+3 before day+4
     day5 = (today + dt.timedelta(days=5)).strftime("%a")
-    assert third.endswith(f"£118.34 ChatGPT {day5}")
+    assert third.endswith(f"; £118.34 ChatGPT {day5}") and "·" not in third
     assert "Webshare" not in " ".join(a["lines"])
     assert a == {**todos.agenda(), "generated": a["generated"]}   # deterministic
     assert todos.agenda_tool()["lines"] == a["lines"]
@@ -148,8 +148,8 @@ def test_this_week_line_caps_at_four_names(todos):
         todos.create(f"Deadline {n}", "P1", due=_day(n))
     line = todos.agenda()["lines"][-1]
     d2 = (dt.date.today() + dt.timedelta(days=2)).strftime("%a")
-    assert line.startswith(f"This week: {d2} Deadline 2 · ") and line.endswith(" +2 more")
-    assert line.count(" · ") == 3
+    assert line.startswith(f"This week: {d2} Deadline 2, ") and line.endswith(" +2 more")
+    assert line.count(", ") == 3 and "·" not in line
 
 
 def test_agenda_leaves_out_empty_lines_and_ticked_occurrences(todos):

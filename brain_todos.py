@@ -1347,13 +1347,17 @@ def agenda(on: str | None = None) -> dict:
         named = [dt.date.fromisoformat(i["date"]).strftime("%a") + " " + i["title"]
                  for i in week[:_MAX_NAMES]]
         more = len(week) - _MAX_NAMES
-        bits.append(" · ".join(named) + (f" +{more} more" if more > 0 else ""))
+        bits.append(", ".join(named) + (f" +{more} more" if more > 0 else ""))
+    bills = []
     for b in out["bills"]:
         day = dt.date.fromisoformat(b["date"]).strftime("%a")
         payee = re.sub(r"\s*£[\d,.]+", "", b["title"]).strip()
-        bits.append(f"£{b['amount']:.2f} {payee} {day}")
+        bills.append(f"£{b['amount']:.2f} {payee} {day}")
+    if bills:
+        bits.append(", ".join(bills))
     if bits:
-        lines.append("This week: " + " · ".join(bits))
+        # g-design bans middle dots in copy: commas within a part, "; " between.
+        lines.append("This week: " + "; ".join(bits))
     if bad and len(lines) < 3:
         lines.append(f"Calendar partly unreadable: {bad} item(s) could not be parsed.")
     out["lines"] = lines[:3]
