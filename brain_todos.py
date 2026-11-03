@@ -1340,10 +1340,20 @@ def agenda(on: str | None = None) -> dict:
         lines.append(" ".join(bits))
     if say(out["tomorrow"]):
         lines.append("Tomorrow: " + _names(say(out["tomorrow"])) + ".")
-    if out["bills"]:
-        shown = "; ".join(_bill_text(b) for b in out["bills"][:_MAX_NAMES])
-        more = len(out["bills"]) - _MAX_NAMES
-        lines.append("Bills this week: " + shown + (f"; and {more} more" if more > 0 else "") + ".")
+    # Line 3: the rest of the week's deadlines (finance excluded), then bills.
+    week = [i for i in out["week"] if str(i["category"] or "").lower() != "finance"]
+    bits = []
+    if week:
+        named = [dt.date.fromisoformat(i["date"]).strftime("%a") + " " + i["title"]
+                 for i in week[:_MAX_NAMES]]
+        more = len(week) - _MAX_NAMES
+        bits.append(" · ".join(named) + (f" +{more} more" if more > 0 else ""))
+    for b in out["bills"]:
+        day = dt.date.fromisoformat(b["date"]).strftime("%a")
+        payee = re.sub(r"\s*£[\d,.]+", "", b["title"]).strip()
+        bits.append(f"£{b['amount']:.2f} {payee} {day}")
+    if bits:
+        lines.append("This week: " + " · ".join(bits))
     if bad and len(lines) < 3:
         lines.append(f"Calendar partly unreadable: {bad} item(s) could not be parsed.")
     out["lines"] = lines[:3]

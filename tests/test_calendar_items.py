@@ -125,7 +125,11 @@ def test_agenda_sections_lines_and_bills(todos, client):
     assert len(a["lines"]) == 3
     assert a["lines"][0].startswith("Today: 16:30 Interview.") and "Overdue: Water and energy" in a["lines"][0]
     assert a["lines"][1] == "Tomorrow: 14:15 Fly to Stockholm."
-    assert a["lines"][2].startswith("Bills this week: ChatGPT £118.34 ")
+    third = a["lines"][2]
+    assert third.startswith("This week: ") and "Dissertation" in third and "Anniversary" in third
+    assert third.index("Anniversary") < third.index("Dissertation")   # day+3 before day+4
+    day5 = (today + dt.timedelta(days=5)).strftime("%a")
+    assert third.endswith(f"£118.34 ChatGPT {day5}")
     assert "Webshare" not in " ".join(a["lines"])
     assert a == {**todos.agenda(), "generated": a["generated"]}   # deterministic
     assert todos.agenda_tool()["lines"] == a["lines"]
@@ -135,8 +139,17 @@ def test_a_bill_tomorrow_is_said_once_on_the_bills_line(todos):
     todos.create("Rent £650", "P1", category="finance", amount=650, due=_day(1))
     a = todos.agenda()
     assert [i["title"] for i in a["tomorrow"]] == ["Rent £650"]
-    assert a["lines"] == ["Bills this week: Rent £650 " +
-                          (dt.date.today() + dt.timedelta(days=1)).strftime("%a %-d %b") + "."]
+    day = (dt.date.today() + dt.timedelta(days=1)).strftime("%a")
+    assert a["lines"] == [f"This week: £650.00 Rent {day}"]
+
+
+def test_this_week_line_caps_at_four_names(todos):
+    for n in range(2, 8):
+        todos.create(f"Deadline {n}", "P1", due=_day(n))
+    line = todos.agenda()["lines"][-1]
+    d2 = (dt.date.today() + dt.timedelta(days=2)).strftime("%a")
+    assert line.startswith(f"This week: {d2} Deadline 2 · ") and line.endswith(" +2 more")
+    assert line.count(" · ") == 3
 
 
 def test_agenda_leaves_out_empty_lines_and_ticked_occurrences(todos):
