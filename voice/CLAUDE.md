@@ -34,7 +34,7 @@ MCP tools use.
 ## App session (the G-Command iPhone and Mac chat)
 `appchat.py`, reached as `/chat` with `session: "app"` (one JSON reply) or
 `/chat/stream` (NDJSON `delta` / `tool` / `done`). g-command-web's
-`pages/voice/api.py` is the only caller and fills the extra fields.
+`core/api/voice.py` is the only caller and fills the extra fields.
 - Replies are `{reply, blocks}`. Blocks are g-command-web's panel contract
   (`core/panels/CLAUDE.md`, the one schema web, phone and Mac draw);
   `blocks.py` drops anything that does not fit it. `show_panel` emits a
@@ -66,6 +66,12 @@ MCP tools use.
   `attach_blocks` still lose theirs. Every todo change returns its row under
   `todos.BLOCKS`; the app session draws it, `agent._run_tool` strips it for
   WhatsApp and talk, which share the same tools.
+  An edit or tick also says what it changed (`todos.changes`: "date
+  2026-10-26 09:00 to 2026-10-30 09:00", "done for 2026-10-24") as `changed`
+  in the result and a `detail` block under the row, so the chat shows the
+  before as well as the after.
+- Every app turn logs one `turn sender=app model=<id> tools=N writes=N ms=N`
+  line, the journal's answer to which model chat runs on.
 - **Agent activity is READ ONLY, by design.** `agent_activity` reads tmux
   sessions, pane tails and recent Claude Code session files through
   g-command-web's `GET /api/sessions/activity`, with a five-minute grant the

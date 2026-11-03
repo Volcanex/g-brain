@@ -224,7 +224,7 @@ def next_occurrence(it, day):
 def row(it, actions=False):
     """One todo as a panel-contract row. `actions` adds the Delete action."""
     resolved = it["status"] in ("done", "failed", "cancelled")
-    detail = " · ".join(x for x in (_when(it), it.get("priority"),
+    detail = ", ".join(x for x in (_when(it), it.get("priority"),
                                     None if it["status"] == "open" else it["status"],
                                     it.get("location")) if x)
     out = {"id": it["slug"], "title": it["title"], "link": "/note/" + it["permalink"],
@@ -261,10 +261,33 @@ def rows_block(items, title=None, actions=False):
     return b
 
 
-def _changed(it, title="Updated"):
-    return {"ok": True, "todo": {k: it.get(k) for k in ("slug", "title", "status", "priority", "due",
-                                                          "start", "end", "urgent", "category", "rrule")},
-            BLOCKS: [rows_block([it], title)]}
+def changes(before, after):
+    """What one write changed, in words ("date 2026-11-04 to 2026-11-06"), so the
+    chat can say it under the row. Empty when nothing it can name moved."""
+    out = []
+    for label, key in (("date", None), ("title", "title"), ("priority", "priority"),
+                       ("category", "category"), ("location", "location"), ("status", "status")):
+        a, b = (_when(before), _when(after)) if key is None else (before.get(key), after.get(key))
+        if (a or "") != (b or ""):
+            out.append(f"{label} {a or 'none'} to {b or 'none'}")
+    if bool(before.get("urgent")) != bool(after.get("urgent")):
+        out.append("starred" if after.get("urgent") else "star removed")
+    for key, said in (("done_dates", "done for"), ("failed_dates", "did not happen on")):
+        new = sorted(set(map(str, after.get(key) or [])) - set(map(str, before.get(key) or [])))
+        out += [f"{said} {d}" for d in new]
+    return out
+
+
+def _changed(it, title="Updated", before=None):
+    out = {"ok": True, "todo": {k: it.get(k) for k in ("slug", "title", "status", "priority", "due",
+                                                         "start", "end", "urgent", "category", "rrule")},
+           BLOCKS: [rows_block([it], title)]}
+    moved = changes(before, it) if before else []
+    if moved:
+        out["changed"] = moved
+        text = "; ".join(moved)
+        out[BLOCKS].append({"type": "detail", "text": "Changed " + text})
+    return out
 
 
 def _apply(target, fields, title):
@@ -272,7 +295,7 @@ def _apply(target, fields, title):
     if err:
         return err
     try:
-        return _changed(brain_todos.update(it["slug"], fields), title)
+        return _changed(brain_todos.update(it["slug"], fields), title, before=it)
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
 
@@ -287,6 +310,7 @@ def update_todo(target, title=None, date=None, time=None, priority=None, starred
     it, err = find(target)
     if err:
         return err
+    before = it
     fields = {}
     if repeat is not None:
         rule = resolve_repeat(repeat)
@@ -345,7 +369,7 @@ def update_todo(target, title=None, date=None, time=None, priority=None, starred
     if not fields:
         return {"error": "nothing to change"}
     try:
-        return _changed(brain_todos.update(it["slug"], fields))
+        return _changed(brain_todos.update(it["slug"], fields), before=before)
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
 

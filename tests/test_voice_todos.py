@@ -196,3 +196,21 @@ def test_whatsapp_path_strips_rows(T):
     it = _make("Strip me", due="2099-01-01")
     res = agent._run_tool("mark_done", json.dumps({"target": it["slug"]}))
     assert res["ok"] and agent.todos.BLOCKS not in res
+
+
+def test_a_change_says_what_moved_under_its_row(T):
+    it = _make("Dentist", start="2026-10-26T09:00:00", end="2026-10-26T09:30:00", category="health")
+    out = T.reschedule_todo(it["slug"], "next Friday")
+    assert out["changed"] == ["date 2026-10-26 09:00 to 2026-10-30 09:00"]
+    rows, detail = out[T.BLOCKS]
+    assert rows["rows"][0]["link"].startswith("/note/")
+    assert detail == {"type": "detail", "text": "Changed date 2026-10-26 09:00 to 2026-10-30 09:00"}
+    out = T.update_todo("dentist", priority="p1", starred=True)
+    assert out["changed"] == ["priority P2 to P1", "starred"]
+    assert "·" not in out[T.BLOCKS][0]["rows"][0]["detail"]
+    assert "changed" not in T.update_todo("dentist", priority="p1")   # nothing moved, nothing said
+
+
+def test_a_recurring_tick_says_which_day(T):
+    it = _make("Stretch", due="2026-10-20", rrule="FREQ=DAILY")
+    assert T.mark_done(it["slug"])["changed"] == ["done for 2026-10-24"]

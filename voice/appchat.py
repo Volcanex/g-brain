@@ -267,6 +267,10 @@ def stream_turn(session, text, *, budget=None, images=None, files=None, attachme
     reply = agent.confirm_guard(parts[-1] if parts else "...", writes)
     history.append({"role": "assistant", "content": reply})
     transcript.append(session, "assistant", reply, blocks=state or None)
+    # One line per turn naming the model that answered, so "which model is chat
+    # on" is answered by the journal, not by config.
+    agent.log.info("turn sender=%s model=%s tools=%d writes=%d ms=%d", session,
+                   model or config.MODEL, len(used), len(writes), ms())
     yield {"t": "done", "reply": reply, "blocks": state, "tools": used, "ms": ms()}
 
 
