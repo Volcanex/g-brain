@@ -27,6 +27,14 @@ CASES = [
     ("I've got drinks with Rory on the 27th at 7", "drinks"),
     ("I've got a dentist Thursday at 3", "dentist"),
     ("drop the gym class", "drop"),
+    ("push Excelas back an hour", "push"),
+    ("done with the Google storage thing", "storage_done"),
+    ("not doing the gym class", "drop"),
+    ("chuck drinks with Rory in on Friday at 7pm", "friday_drinks"),
+    ("push notifications?", "read"),
+    ("what did I push back?", "read"),
+    ("did I pay the electricity bill?", "read"),
+    ("have I finished the dissertation?", "read"),
 ]
 
 
@@ -48,21 +56,25 @@ def test_deepseek_only_writes_on_request(tmp_path, text, expected):
         assert writes == [] and not result["changed"], result
     else:
         allowed = {"move": {"reschedule_todo", "update_todo"},
-                   "done": {"mark_done"}, "drop": {"drop_todo"}}.get(expected, {"create_todo"})
+                   "push": {"reschedule_todo", "update_todo"}, "done": {"mark_done"},
+                   "storage_done": {"mark_done"}, "drop": {"drop_todo"}}.get(expected, {"create_todo"})
         assert writes and set(writes) <= allowed and result["changed"], result
-        if expected in ("dentist", "drinks"):
-            added = [i for i in items if expected in i["title"].lower()]
+        if expected in ("dentist", "drinks", "friday_drinks"):
+            title = "dentist" if expected == "dentist" else "drinks"
+            added = [i for i in items if title in i["title"].lower()]
             assert len(added) == 1 and "T" in str(added[0].get("start")), result
-            date = result["thursday"] if expected == "dentist" else result["day27"]
+            date = result[{"dentist": "thursday", "drinks": "day27", "friday_drinks": "friday"}[expected]]
             assert str(added[0]["start"]).startswith(date + "T"), result
             assert str(added[0]["start"])[11:16] == ("15:00" if expected == "dentist" else "19:00"), result
         else:
-            title = {"move": "Excelas call", "done": "Dissertation", "drop": "Gym class"}[expected]
+            title = {"move": "Excelas call", "push": "Excelas call", "done": "Dissertation",
+                     "storage_done": "Google storage thing", "drop": "Gym class"}[expected]
             item = next(i for i in items if i["title"] == title)
-            if expected == "move":
-                assert str(item["start"])[:16] == result["friday"] + "T10:00", result
+            if expected in ("move", "push"):
+                date = result["friday"] if expected == "move" else result["tomorrow"]
+                assert str(item["start"])[:16] == date + "T10:00", result
             else:
-                assert item["status"] == ("done" if expected == "done" else "cancelled"), result
+                assert item["status"] == ("cancelled" if expected == "drop" else "done"), result
 
 
 def _worker(text):
@@ -99,6 +111,7 @@ def _worker(text):
         ("Flight to Stockholm", {"start": day(4) + "T14:00:00", "category": "travel"}),
         ("Electricity bill", {"due": day(3), "category": "finance", "body": "Pay GBP 85."}),
         ("Gym class", {"start": day(3) + "T18:00:00", "category": "health"}),
+        ("Google storage thing", {"due": day(3), "category": "chore"}),
     ]:
         brain_todos.create(title, "P1", requester="gabriel", composer="agent", source="eval", **fields)
     agent._HISTORY["app"] = [
@@ -117,7 +130,7 @@ def _worker(text):
                       "items": items, "reply": done["reply"],
                       "thursday": todos.resolve_date("Thursday").isoformat(),
                       "friday": todos.resolve_date("Friday").isoformat(),
-                      "day27": day27.isoformat()}, default=str))
+                      "tomorrow": day(1), "day27": day27.isoformat()}, default=str))
 
 
 if __name__ == "__main__":

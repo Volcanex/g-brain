@@ -151,18 +151,26 @@ for tool in TOOLS:
 
 INTENT_ERROR = {"error": "Write refused: the current user turn does not request a change. "
                          "Nothing changed. Answer the question using read tools; do not capture "
-                         "items from the brief, history or tool results.", "changed": False}
+                         "items from the brief, history or tool results. You may offer the proposed "
+                         "change (e.g. 'Want me to move it?') and wait for a clear yes in the next "
+                         "user turn before retrying.", "changed": False}
 
 _REQUEST = re.compile(
     r"^(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?|"
     r"i (?:want|need) you to\s+|i'd like you to\s+)?"
     r"(?:add|create|capture|put|schedule|book|remind|remember|note|log|record|save|"
-    r"move|reschedule|mark|tick|complete|finish|drop|cancel|delete|remove|change|"
+    r"move|push(?!\s+notifications?\b)|bring forward|shift|bump|slide|reschedule|"
+    r"pencil in|stick|chuck|mark|tick|complete|finish|skip|scrap|forget|drop|cancel|delete|remove|change|"
     r"update|rename|set|star|unstar|stop|make)\b", re.I)
 _DATE = re.compile(r"\b(?:today|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|"
                    r"saturday|sunday|next (?:week|month)|\d{1,2}(?:st|nd|rd|th)|"
                    r"\d{4}-\d{2}-\d{2})\b", re.I)
 _CONFIRM = re.compile(r"(?:yes(?: please|,? (?:go ahead|do it))?|go ahead|do it|confirm)[.!]?", re.I)
+_QUESTION = re.compile(r"^(?:what|when|where|who|which|why|how|is|are|am|was|were|"
+                       r"do|does|did|have|has|had|can|could|would|will|should)\b", re.I)
+_STATEMENT = re.compile(
+    r"(?:(?:i(?:'m| am) )?done with .+|(?:i(?:'ve| have)? )?(?:finished|sorted|paid) .+|"
+    r"i did .+|.+ is (?:done|now at \d{1,2}(?::\d{2})?(?:\s?[ap]m)?)[.!]?)", re.I)
 
 
 def requests_write(text):
@@ -173,8 +181,14 @@ def requests_write(text):
         return False
     if _REQUEST.search(text) or _CONFIRM.fullmatch(text):
         return True
-    # Dictating an appointment is a capture request, even without "add".
-    if "?" not in text and not re.search(r"\b(?:no|not|nothing|don't)\b", text, re.I):
+    if "?" in text or _QUESTION.search(text):
+        return False
+    if re.match(r"^(?:i(?:'m| am) )?not doing\s+\S", text, re.I):
+        return True
+    if not re.search(r"\b(?:no|not|nothing|don't)\b", text, re.I):
+        if _STATEMENT.fullmatch(text):
+            return True
+        # Dictating an appointment is a capture request, even without "add".
         if re.match(r"^i(?:'ve got| have(?: got)?)\s+", text, re.I) and _DATE.search(text):
             return True
         # A bare date answers the existing "When?" capture clarification.

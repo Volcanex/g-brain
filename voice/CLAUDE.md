@@ -250,8 +250,8 @@ register); `tests/test_voice_turn.py`, `test_voice_live.py` and
 - Principle/guidance: only the current owner's request authorizes a write;
   questions stay read-only, while explicit changes and dated dictation work.
 - Sensor: the offline intent tests plus the opt-in DeepSeek eval above.
-- Pass criteria: all eight questions emit zero write calls and leave fixture
-  todos byte-identical; all six change requests call the expected write tool
+- Pass criteria: all twelve questions emit zero write calls and leave fixture
+  todos byte-identical; all ten change requests call the expected write tool
   and persist the expected title/date/time or status. A refused or deduped write
   still counts as a write attempt. Run the paid gate three times when changing
   routing, write descriptions, the intent guard or the reasoning model.

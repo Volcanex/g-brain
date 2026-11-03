@@ -39,6 +39,16 @@ def test_app_question_refuses_every_write_before_dispatch(tmp_path, monkeypatch,
     "I've got a dentist Thursday at 3?", "Friday am I free?",
     "don't add the dentist Thursday", "can you tell me what's due?",
     "remind me what I owe?", "can you remind me what's due tomorrow?", "", None,
+    "what's on", "when is Excelas", "is the Google storage thing done?",
+    "did I pay the electricity bill?", "have I finished the dissertation?",
+    "am I free", "how much do I owe", "push notifications?", "what did I push back?",
+    "done with the Google storage thing?", "finished the dissertation?",
+    "the Google storage thing is done?", "sorted the Google storage thing?",
+    "paid the electricity bill?", "I did the Google storage thing?",
+    "not doing the gym class?", "Excelas is now at 4?",
+    "is the Google storage thing done", "did I pay the electricity bill",
+    "have I finished the dissertation", "what is done", "what is now at 4",
+    "I don't think the Google storage thing is done",
 ])
 def test_question_or_missing_turn_never_authorizes_a_write(text):
     from voice import agent
@@ -51,6 +61,20 @@ def test_question_or_missing_turn_never_authorizes_a_write(text):
     "I've got a dentist Thursday at 3", "drop the gym class",
     "Can you please move the Excelas call to Friday?", "please delete the dentist",
     "I've got a flight tomorrow", "Thursday at 3", "yes, go ahead",
+    "push Excelas back an hour", "bring forward Excelas to 3pm",
+    "move up Excelas to 3pm", "shift Excelas to Friday", "bump Excelas to Friday",
+    "slide Excelas back an hour", "reschedule Excelas for Friday",
+    "done with the Google storage thing", "finished the Google storage thing",
+    "the Google storage thing is done", "sorted the Google storage thing",
+    "paid the electricity bill", "I did the Google storage thing",
+    "skip the gym class", "not doing the gym class", "scrap the gym class",
+    "forget the gym class", "change Excelas to Friday", "make Excelas 3pm",
+    "Excelas is now at 4", "book dentist Thursday 3pm",
+    "pencil in dentist Thursday 3pm", "stick dentist in Thursday 3pm",
+    "chuck drinks in on Friday", "can you push Excelas back an hour?",
+    "could you pencil in dentist Thursday 3pm?", "I'm done with the dissertation",
+    "I've finished the dissertation", "I paid the electricity bill",
+    "I'm not doing the gym class",
 ])
 def test_changes_dictation_and_capture_followups_are_allowed(text):
     from voice import agent
@@ -100,3 +124,43 @@ def test_intent_permission_keeps_the_delete_confirmation_guard(tmp_path, monkeyp
     assert agent._run_tool("delete_todo", confirmed, user_text="what's on this week?")["changed"] is False
     assert brain_todos.get(item["slug"])
     assert agent._run_tool("delete_todo", confirmed, user_text="yes")["deleted"] is True
+
+
+def test_refused_write_can_be_offered_then_confirmed(tmp_path, monkeypatch):
+    import brain_todos
+    from voice import agent, appchat, transcript
+    monkeypatch.setattr(brain_todos, "TODOS_DIR", tmp_path / "todos")
+    monkeypatch.setattr(transcript, "_TRANSCRIPT_DIR", str(tmp_path / "voice"))
+    monkeypatch.setattr(agent, "_HISTORY", {})
+    monkeypatch.setattr(appchat, "build_brief", lambda: "")
+    item = brain_todos.create("Excelas call", "P1", start="2099-01-01T09:00:00",
+                              requester="gabriel")
+    path = brain_todos.TODOS_DIR / (item["slug"] + ".md")
+    before = path.read_bytes()
+    call = {"id": "move", "type": "function", "function": {
+        "name": "update_todo", "arguments": json.dumps({"target": item["slug"], "time": "10am"})}}
+    seen = []
+
+    def stream(messages, model=None):
+        results = [json.loads(m["content"]) for m in messages if m["role"] == "tool"]
+        if not results:
+            return iter([("calls", [call])])
+        result = results[-1]
+        seen.append(result)
+        if result.get("error"):
+            assert result["changed"] is False
+            assert "offer" in result["error"].lower()
+            assert "yes" in result["error"].lower()
+            return iter([("text", "Want me to move it?"), ("calls", [])])
+        return iter([("text", "Moved it to 10am."), ("calls", [])])
+
+    monkeypatch.setattr(appchat, "_stream", stream)
+    offer = appchat.collect("intent-test", "when is Excelas?")
+    assert offer == {"reply": "Want me to move it?", "blocks": []}
+    assert path.read_bytes() == before
+    assert agent._HISTORY["intent-test"][-1]["content"] == offer["reply"]
+
+    confirmed = appchat.collect("intent-test", "yes")
+    assert confirmed["reply"] == "Moved it to 10am." and confirmed["blocks"]
+    assert not seen[-1].get("error")
+    assert str(brain_todos.get(item["slug"])["start"]) == "2099-01-01T10:00:00"
