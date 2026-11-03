@@ -229,14 +229,17 @@ def _about_block() -> str:
 def composed_payload() -> str:
     """The pulse payload that rides into every session: page, near todos,
     health, brief age. Each section degrades to nothing rather than erroring."""
+    # The calendar goes first: it is what a session start most needs, and the
+    # budget below truncates from the end (a long page used to cut it off).
+    sections = [_agenda_block()]
     about = _about_block()
-    sections = [about] if about else []
+    if about:
+        sections.append(about)
     try:
         page = PAGE_PATH.read_text().strip() if PAGE_PATH.exists() else ""
     except Exception:
         page = ""
     sections.append(page or "(pulse page is empty, nothing recorded yet)")
-    sections.append(_agenda_block())
     health = _health_line()
     if health:
         sections.append(health)

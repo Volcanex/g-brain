@@ -163,7 +163,8 @@ def test_pulse_shows_the_agenda_not_a_raw_list(todos):
     text = pulse._agenda_block()
     assert text.startswith("Calendar:\nTomorrow: 14:15 Fly to Stockholm.")
     assert "Later this week:" in text and "Dissertation" in text
-    assert "Dated, next 7 days" not in pulse.composed_payload()
+    payload = pulse.composed_payload()
+    assert payload.startswith("Calendar:\n") and "Dated, next 7 days" not in payload
 
 
 def test_subs_items_carry_a_numeric_amount(todos, monkeypatch):
