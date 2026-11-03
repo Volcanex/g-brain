@@ -118,7 +118,7 @@ def test_agenda_sections_lines_and_bills(todos, client):
     assert [(i["title"], i["time"], i["all_day"]) for i in a["today"]] == [("Interview", "16:30", False)]
     assert [i["title"] for i in a["tomorrow"]] == ["Fly to Stockholm"]
     week = {i["title"]: i for i in a["week"]}
-    assert set(week) == {"Webshare £7.24", "Dissertation", "ChatGPT £118.34", "Anniversary"}
+    assert set(week) == {"Dissertation", "ChatGPT £118.34", "Anniversary"}   # under £50 left out
     assert week["Anniversary"]["recurring"] is True and week["Anniversary"]["date"] > today.isoformat()
     assert week["Dissertation"]["all_day"] is True and week["Dissertation"]["time"] is None
     assert [(b["title"], b["amount"]) for b in a["bills"]] == [("ChatGPT £118.34", 118.34)]
@@ -126,9 +126,17 @@ def test_agenda_sections_lines_and_bills(todos, client):
     assert a["lines"][0].startswith("Today: 16:30 Interview.") and "Overdue: Water and energy" in a["lines"][0]
     assert a["lines"][1] == "Tomorrow: 14:15 Fly to Stockholm."
     assert a["lines"][2].startswith("Bills this week: ChatGPT £118.34 ")
-    assert "Webshare" not in a["lines"][2]
+    assert "Webshare" not in " ".join(a["lines"])
     assert a == {**todos.agenda(), "generated": a["generated"]}   # deterministic
     assert todos.agenda_tool()["lines"] == a["lines"]
+
+
+def test_a_bill_tomorrow_is_said_once_on_the_bills_line(todos):
+    todos.create("Rent £650", "P1", category="finance", amount=650, due=_day(1))
+    a = todos.agenda()
+    assert [i["title"] for i in a["tomorrow"]] == ["Rent £650"]
+    assert a["lines"] == ["Bills this week: Rent £650 " +
+                          (dt.date.today() + dt.timedelta(days=1)).strftime("%a %-d %b") + "."]
 
 
 def test_agenda_leaves_out_empty_lines_and_ticked_occurrences(todos):

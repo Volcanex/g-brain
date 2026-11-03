@@ -1267,9 +1267,8 @@ def _names(items, with_day=False):
 def _bill_text(it):
     day = dt.date.fromisoformat(it["date"]).strftime("%a %-d %b")
     title = it["title"]
-    money = f"£{it['amount']:.2f}"
-    if money not in title:
-        title = f"{title} {money}"
+    if "£" not in title:
+        title = f"{title} £{it['amount']:.2f}"
     return f"{title} {day}"
 
 
@@ -1277,7 +1276,9 @@ def agenda(on: str | None = None) -> dict:
     """The agenda contract served at GET /api/todos/agenda and the `agenda` tool.
 
     {generated, overdue, today, tomorrow, week (day+2..day+7), bills (finance,
-    next 7 days, amount >= 50), lines (<= 3 plain lines)}. A store that cannot
+    next 7 days, amount >= 50), lines (<= 3 plain lines)}. A finance item
+    under £50 is left out of every section: a small charge is not essential.
+    A bill is named on the bills line only, not again under today/tomorrow. A store that cannot
     be read says so in `lines`; it never comes back as a quiet empty list.
     """
     now = dt.datetime.now().astimezone()
@@ -1309,6 +1310,9 @@ def agenda(on: str | None = None) -> dict:
             continue
         d, time_s, all_day = when
         item = _agenda_item(slug, md, d, time_s, all_day)
+        is_bill = str(md.get("category") or "").lower() == "finance" and item["amount"] is not None
+        if is_bill and item["amount"] < BILL_MIN_GBP:
+            continue   # a small charge that clears by itself is not essential
         gap = (d - day0).days
         if gap < 0:
             out["overdue"].append(item)
@@ -1318,22 +1322,24 @@ def agenda(on: str | None = None) -> dict:
             out["tomorrow"].append(item)
         elif gap <= 7:
             out["week"].append(item)
-        if (str(md.get("category") or "").lower() == "finance" and day0 <= d <= week_end
-                and item["amount"] is not None and item["amount"] >= BILL_MIN_GBP):
+        if is_bill and day0 <= d <= week_end:
             out["bills"].append(item)
     order = lambda i: (i["date"], i["time"] is None, i["time"] or "", i["title"])  # noqa: E731
     for key in ("overdue", "today", "tomorrow", "week", "bills"):
         out[key].sort(key=order)
+    # Bills are said once, on the bills line, not again under today/tomorrow.
+    bill_slugs = {b["slug"] for b in out["bills"]}
+    say = lambda items: [i for i in items if i["slug"] not in bill_slugs]  # noqa: E731
     lines = []
-    if out["overdue"] or out["today"]:
+    if say(out["overdue"]) or say(out["today"]):
         bits = []
-        if out["today"]:
-            bits.append("Today: " + _names(out["today"]) + ".")
-        if out["overdue"]:
-            bits.append("Overdue: " + _names(out["overdue"], with_day=True) + ".")
+        if say(out["today"]):
+            bits.append("Today: " + _names(say(out["today"])) + ".")
+        if say(out["overdue"]):
+            bits.append("Overdue: " + _names(say(out["overdue"]), with_day=True) + ".")
         lines.append(" ".join(bits))
-    if out["tomorrow"]:
-        lines.append("Tomorrow: " + _names(out["tomorrow"]) + ".")
+    if say(out["tomorrow"]):
+        lines.append("Tomorrow: " + _names(say(out["tomorrow"])) + ".")
     if out["bills"]:
         shown = "; ".join(_bill_text(b) for b in out["bills"][:_MAX_NAMES])
         more = len(out["bills"]) - _MAX_NAMES
