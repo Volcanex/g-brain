@@ -236,7 +236,8 @@ def stream_turn(sender: str, text: str):
             gate = _commit_gate(sender, args, text) if name == "execute_commit" else None
             if not agent.budget_left(len(tools_used) - 1):
                 gate = dict(agent.BUDGET_ERROR)
-            result = gate or agent._run_tool(name, args, session_id=call["id"], turn_id=_TURN[sender])
+            result = gate or agent._run_tool(name, args, session_id=call["id"], turn_id=_TURN[sender],
+                                             user_text=text)
             if name in agent.WRITE_TOOLS:
                 writes.append((name, result))
             if name == "propose_commit" and isinstance(result, dict) and result.get("plan_id"):

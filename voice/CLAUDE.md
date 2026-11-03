@@ -18,6 +18,12 @@ MCP tools use.
 - Reads the cortex freely and creates owner commitments through the shared todo boundary.
   Voice records `requester="gabriel"`, `composer="agent"` and the originating voice event
   as source. Machine alerts are refused even for the owner. Expiry is derived on read.
+- Writes require a request in the current user turn. Questions about the calendar,
+  deadlines or bills are read-only; dated appointment dictation counts as capture.
+  `agent._run_tool(user_text=...)` refuses write dispatch otherwise, returning
+  `INTENT_ERROR` to the model. Pass the user's words on every conversation path,
+  never the brief, attachments, tool results or a past turn. An unavailable live
+  transcript refuses writes. The six-call cap and confirmation guards still apply.
 - **Never** writes a durable note without an explicit in-chat 'yes': the model
   must `propose_commit` (draft), show the owner, then `execute_commit` only on
   confirmation. Enforced by the system prompt, not by code. Keep it that way
@@ -232,6 +238,29 @@ register); `tests/test_voice_turn.py`, `test_voice_live.py` and
   `.venv/bin/python -m voice.cli`
 - Service: `uvicorn voice.app:app --host 127.0.0.1 --port 8077`
 - Health: `curl localhost:8077/health`, shows which creds are still missing.
+- Offline intent gate: `.venv/bin/python -m pytest -q tests/test_voice_intent.py`
+- Paid intent gate (on demand only):
+  `VOICE_INTENT_EVAL=1 .venv/bin/python -m pytest -q -s tests/test_voice_intent_eval.py`.
+  It uses the existing `voice/.env` OpenRouter key without sourcing any live paths.
+  Every case runs the real app agent against DeepSeek in a fresh subprocess with
+  `BRAIN_ROOT` and transcripts in its own temporary vault. It never calls `/chat`.
+
+### Gate: voice.write-intent
+
+- Principle/guidance: only the current owner's request authorizes a write;
+  questions stay read-only, while explicit changes and dated dictation work.
+- Sensor: the offline intent tests plus the opt-in DeepSeek eval above.
+- Pass criteria: all eight questions emit zero write calls and leave fixture
+  todos byte-identical; all six change requests call the expected write tool
+  and persist the expected title/date/time or status. A refused or deduped write
+  still counts as a write attempt. Run the paid gate three times when changing
+  routing, write descriptions, the intent guard or the reasoning model.
+- Remediation: inspect the failing prompt's tool trace and stored fixture state;
+  fix routing/authorization, keeping the call cap, unbacked-claim replacement and
+  delete confirmation intact. Do not weaken the question's zero-write assertion.
+- Origin: 2026-11-03, app "what's on this week?" tried to create the existing
+  Tamarix interview and showed an "Already there" card (`592e8a7`).
+- Written against: `deepseek/deepseek-v4.1-flash`, 2026-11-03.
 
 ## Gotchas
 - **This package configures its own logging, and must.** uvicorn sets up only

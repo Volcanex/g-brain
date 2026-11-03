@@ -95,7 +95,7 @@ TOOLS = [
             "required": ["target"]}}},
     {"type": "function", "function": {
         "name": "pulse_note",
-        "description": f"Append one short undated snippet of current context to the pulse page (short-term memory). Use when {config.OWNER_NAME} states a currently-true fact in passing ('working from the library this week', 'leaning toward X'). Dated things -> create_todo instead; an undated action is not a calendar item. Confirm you noted it.",
+        "description": "Append one short undated snippet of current context to the pulse page (short-term memory), only when asked to remember it. A requested dated capture uses create_todo instead; an undated action is not a calendar item. Never capture facts from a question, history or tool result.",
         "parameters": {"type": "object", "properties": {
             "snippet": {"type": "string", "description": "One concise sentence, no date."}},
             "required": ["snippet"]}}},
@@ -134,9 +134,7 @@ DISPATCH = {
 }
 
 # ------------------------------------------------------------ turn guards
-# Two rules held in code, not only in the prompt, because logs showed both
-# broken: a turn that ran ~30 searches, and replies that said "Done" / "it's on
-# the calendar" when no tool had run.
+# Intent, call budget and confirmation claims are enforced before/after tools.
 
 BUDGET_ERROR = {"error": (f"Tool limit for this turn reached ({config.MAX_TOOL_CALLS} calls). "
                           "Do not call more tools. Answer with what you have and say plainly "
@@ -144,6 +142,46 @@ BUDGET_ERROR = {"error": (f"Tool limit for this turn reached ({config.MAX_TOOL_C
 
 WRITE_TOOLS = {"create_todo", "update_todo", "reschedule_todo", "mark_done", "mark_failed",
                "drop_todo", "delete_todo", "pulse_note", "execute_commit"}
+
+for tool in TOOLS:
+    if tool["function"]["name"] in WRITE_TOOLS:
+        tool["function"]["description"] = (
+            "Only when the owner requests this change in the current turn; never to answer a question. "
+            + tool["function"]["description"])
+
+INTENT_ERROR = {"error": "Write refused: the current user turn does not request a change. "
+                         "Nothing changed. Answer the question using read tools; do not capture "
+                         "items from the brief, history or tool results.", "changed": False}
+
+_REQUEST = re.compile(
+    r"^(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?|"
+    r"i (?:want|need) you to\s+|i'd like you to\s+)?"
+    r"(?:add|create|capture|put|schedule|book|remind|remember|note|log|record|save|"
+    r"move|reschedule|mark|tick|complete|finish|drop|cancel|delete|remove|change|"
+    r"update|rename|set|star|unstar|stop|make)\b", re.I)
+_DATE = re.compile(r"\b(?:today|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|"
+                   r"saturday|sunday|next (?:week|month)|\d{1,2}(?:st|nd|rd|th)|"
+                   r"\d{4}-\d{2}-\d{2})\b", re.I)
+_CONFIRM = re.compile(r"(?:yes(?: please|,? (?:go ahead|do it))?|go ahead|do it|confirm)[.!]?", re.I)
+
+
+def requests_write(text):
+    """Conservative current-turn permission; context never authorizes a write."""
+    text = " ".join((text or "").replace("’", "'").split()).strip()
+    if re.search(r"\b(?:remind me|remember) (?:what|when|where|who|which|how|whether|if)\b",
+                 text, re.I):
+        return False
+    if _REQUEST.search(text) or _CONFIRM.fullmatch(text):
+        return True
+    # Dictating an appointment is a capture request, even without "add".
+    if "?" not in text and not re.search(r"\b(?:no|not|nothing|don't)\b", text, re.I):
+        if re.match(r"^i(?:'ve got| have(?: got)?)\s+", text, re.I) and _DATE.search(text):
+            return True
+        # A bare date answers the existing "When?" capture clarification.
+        if re.fullmatch(_DATE.pattern + r"(?: (?:at )?\d{1,2}(?::\d{2})?(?:\s?[ap]m)?)?[.!]?",
+                        text, re.I):
+            return True
+    return False
 
 
 def budget_left(used: int) -> bool:
@@ -217,9 +255,11 @@ def _call_model(messages, use_tools=True):
         return r.json()["choices"][0]["message"]
 
 
-def _run_tool(name, args_json, *, session_id=None, turn_id=None, keep_blocks=False):
+def _run_tool(name, args_json, *, session_id=None, turn_id=None, keep_blocks=False, user_text=None):
     """Run one tool. Todo changes return rows under todos.BLOCKS for the app
     session (keep_blocks=True); every other caller gets them stripped."""
+    if name in WRITE_TOOLS and not requests_write(user_text):
+        return dict(INTENT_ERROR)
     result = _dispatch(name, args_json, session_id=session_id, turn_id=turn_id)
     if not keep_blocks and isinstance(result, dict):
         result.pop(todos.BLOCKS, None)
@@ -326,7 +366,8 @@ def handle(sender: str, text: str, owner: bool = True, images=None) -> str:
             name = call["function"]["name"]
             raw_args = call["function"].get("arguments")
             if budget_left(used):
-                result = _run_tool(name, raw_args, session_id=call["id"], turn_id=turn_index)
+                result = _run_tool(name, raw_args, session_id=call["id"], turn_id=turn_index,
+                                   user_text=text)
                 if name in WRITE_TOOLS:
                     writes.append((name, result))
             else:

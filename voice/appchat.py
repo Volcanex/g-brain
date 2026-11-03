@@ -242,7 +242,7 @@ def stream_turn(session, text, *, budget=None, images=None, files=None, attachme
                 result = _app_tool(name, args, state, activity)
             else:
                 result = agent._run_tool(name, args, session_id=call["id"], turn_id=turn_index,
-                                         keep_blocks=True)
+                                         keep_blocks=True, user_text=text)
                 if name in agent.WRITE_TOOLS:
                     writes.append((name, result))
                 rows = result.pop(todos.BLOCKS, None) if isinstance(result, dict) else None

@@ -194,7 +194,7 @@ def test_model_written_rows_still_lose_actions():
 def test_whatsapp_path_strips_rows(T):
     from voice import agent
     it = _make("Strip me", due="2099-01-01")
-    res = agent._run_tool("mark_done", json.dumps({"target": it["slug"]}))
+    res = agent._run_tool("mark_done", json.dumps({"target": it["slug"]}), user_text="mark Strip me done")
     assert res["ok"] and agent.todos.BLOCKS not in res
 
 

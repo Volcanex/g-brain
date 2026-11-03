@@ -878,7 +878,8 @@ class Call:
                 r.confirmed = True
                 talk._PROPOSED.get(self.sender, {}).pop(_plan_id(args), None)
         result = gate or await asyncio.to_thread(
-            agent._run_tool, name, args, session_id=call_id, turn_id=r.turn)
+            agent._run_tool, name, args, session_id=call_id, turn_id=r.turn,
+            user_text=await self.user_text(r) if name in agent.WRITE_TOOLS else None)
         if name == "list_todos" and isinstance(result, list):
             # Asked again in the next turn ("what else?"), it pages on. A different
             # query starts over, and close_out keeps the page only if it was heard.
@@ -1200,13 +1201,15 @@ async def _relay(ws: WebSocket, sender: str, voice: str | None, engine: str, gre
         last_user["calls"] += 1
         if not agent.budget_left(last_user["calls"] - 1):
             return dict(agent.BUDGET_ERROR)
+        user_text = last_user["text"]
         if name == "execute_commit":
             gate = talk._commit_gate(sender, args, last_user["text"])
             if gate:
                 return gate
             last_user["text"] = ""            # one yes runs one plan
             talk._PROPOSED.get(sender, {}).pop(_plan_id(args), None)
-        result = await asyncio.to_thread(agent._run_tool, name, args, turn_id=talk._TURN.get(sender, 0))
+        result = await asyncio.to_thread(agent._run_tool, name, args, turn_id=talk._TURN.get(sender, 0),
+                                         user_text=user_text)
         if name == "propose_commit" and isinstance(result, dict) and result.get("plan_id"):
             talk._PROPOSED.setdefault(sender, {})[result["plan_id"]] = talk._TURN.get(sender, 0)
         return result
