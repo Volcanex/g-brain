@@ -40,4 +40,4 @@ py-modules = [
 
 [tool.gcore]
 inherits_from = ["gcore"]
-depends = ["ntfy", "openrouter", "telnyx"]
+depends = ["ntfy", "openrouter"]

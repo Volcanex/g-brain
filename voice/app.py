@@ -1,4 +1,6 @@
-"""Voice web service: Telnyx WhatsApp webhook.
+"""Voice web service: the brain's chat, talk and live-call endpoints.
+
+  WhatsApp (Telnyx) was retired 2026-11-03 and is off unless VOICE_WHATSAPP=1.
 
   GET  /webhook  liveness (Telnyx has no GET handshake; returns ok)
   POST /webhook  inbound messages (Ed25519-verified, sender-allowlisted)
@@ -83,7 +85,7 @@ def _app_kwargs(body: ChatIn) -> dict:
 @app.get("/health")
 def health(response: Response):
     # sync def -> FastAPI runs it in a threadpool, so the blocking dependency
-    # probes (OpenRouter, Telnyx) don't stall the event loop.
+    # probes (OpenRouter, brain) don't stall the event loop.
     #
     # The status code must track `ok`. g-core's health contract is "health_url
     # set -> HTTP GET, expect 2xx", and brain_status._check_http maps 2xx to
@@ -231,6 +233,11 @@ def _process(sender: str, text: str, media: list, owner: bool = True):
 
 @app.post("/webhook")
 async def inbound(request: Request, bg: BackgroundTasks):
+    if not config.WHATSAPP_ENABLED:
+        # Retired channel: answer 200 so Telnyx (if still pointed here) does not
+        # retry, but never verify, process or reply.
+        log.info("whatsapp disabled: dropped POST /webhook")
+        return Response(status_code=200)
     raw = await request.body()
     sig = request.headers.get("telnyx-signature-ed25519", "")
     ts = request.headers.get("telnyx-timestamp", "")

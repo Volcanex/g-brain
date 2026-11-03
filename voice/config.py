@@ -42,6 +42,10 @@ TELNYX_API_KEY = os.environ.get("TELNYX_API_KEY", "")            # Bearer for th
 TELNYX_WHATSAPP_NUMBER = os.environ.get("TELNYX_WHATSAPP_NUMBER", "")  # bot sender, +E.164
 TELNYX_PUBLIC_KEY = os.environ.get("TELNYX_PUBLIC_KEY", "")      # base64 Ed25519, webhook verify
 TELNYX_API = "https://api.telnyx.com/v2"
+# The WhatsApp channel was retired 2026-11-03: the owner talks to Voice through
+# the G-Command app (/chat) now. Off unless VOICE_WHATSAPP is set truthy; while
+# off, POST /webhook drops inbound messages and nothing is sent through Telnyx.
+WHATSAPP_ENABLED = os.environ.get("VOICE_WHATSAPP", "").strip().lower() not in ("", "0", "false", "no")
 # When Telnyx refuses a reply, push the owner's reply text through ntfy instead
 # so it is read rather than lost. Off by default: ntfy.sh is a public relay and
 # the topic name is the only lock on it, so the owner opts in.
