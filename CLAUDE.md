@@ -57,6 +57,7 @@ directly, so it gets the alias module, which has no `mcp`. Point it at
 | `g_brain/commit.py` | Versioned note writes: `brain_note` (the front door) + propose/execute/supersede/mark_broken, and the `stale_dep` blast-radius stamp |
 | `g_brain/verify.py` | Pure review rule and stale reports on read. The manual CLI can clear legacy evidence and write `status/stale.json` |
 | `g_brain/condense.py` | Condensation reports on read, cached until notes or the manifest change. The manual CLI can write `status/condense.json` |
+| `g_brain/overview.py` | Chat-facing `overview` (calendar, pulse, health, tickets, where email/money/plans live) and `projects` (manifest list, or one repo doc + commits + services + tickets) |
 | `g_brain/codex.py` | `search_code` tool: semble semantic+lexical search across the repos mapped into `nerves/` |
 | `g_brain/gmap.py` | Layer 3+4 sync: crawls GitHub → brain/nerves/ and brain/lineage/ |
 | `g_spine/status.py` | Layer 5: probes the manifest's services + the dependency catalog, forwards service `/health` checks, alerts the spine on transitions, writes brain/status/snapshot.json |
