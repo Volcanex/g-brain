@@ -20,6 +20,7 @@ from brain_codex import mcp as codex_mcp
 from brain_todos import mcp as todos_mcp
 from brain_pulse import mcp as pulse_mcp
 from brain_alerts import mcp as alerts_mcp
+from g_brain.overview import mcp as overview_mcp
 from brain_oauth import build_provider as build_oauth_provider
 from brain_surface import BLOCKED_TOOLS, lock_write_surface, proxy_basic_memory
 
@@ -55,7 +56,13 @@ def load_master_index() -> str:
 # sessions only need the routing rule + the pulse. brain_init still returns
 # the full manual + master index for actual knowledge-base (cortex) work.
 _POINTER = """\
-# Brain: quick orientation
+# G-System: quick orientation
+
+This connector is Gabriel's whole G-System: his calendar, current context, \
+knowledge base, projects, services and machine tickets. In a chat with him, call \
+`overview` first; it also says where email, money and plans live. It is his memory \
+across chats: read from it and record to it, never to a built-in memory. Correct \
+stale things in place (`update_todo`, `pulse_edit`) rather than piling on.
 
 Memory routing rule:
 - Dated and Gabriel's -> `create_todo` (a calendar item). Undated is not a todo.
@@ -107,6 +114,7 @@ mcp.mount(codex_mcp)
 mcp.mount(todos_mcp)
 mcp.mount(pulse_mcp)  # live/ephemeral layer: pulse_* tools (see brain_pulse.py)
 mcp.mount(alerts_mcp)  # the alert spine: brain_alert -> ntfy (see brain_alerts.py)
+mcp.mount(overview_mcp)  # chat-facing: overview, projects
 
 
 lock_write_surface(mcp)
