@@ -323,6 +323,56 @@ def pulse_note(snippet: str) -> dict:
     return out
 
 
+def _page_entries() -> list[str]:
+    if not PAGE_PATH.exists():
+        return []
+    return [l.lstrip()[2:] for l in PAGE_PATH.read_text().splitlines() if l.lstrip().startswith("- ")]
+
+
+def edit_page(match: str, replacement: str | None = None) -> dict:
+    """Replace or remove the one snippet containing `match`. Rewrites by tmp +
+    atomic rename, the same way the compactor does."""
+    needle = " ".join(match.split()).lower()
+    if not needle:
+        raise ValueError("empty match")
+    lines = PAGE_PATH.read_text().splitlines(keepends=True) if PAGE_PATH.exists() else []
+    hits = [i for i, l in enumerate(lines) if l.lstrip().startswith("- ") and needle in l.lower()]
+    if not hits:
+        raise ValueError(f"no pulse snippet contains {match!r}")
+    if len(hits) > 1:
+        raise ValueError("match is ambiguous, it hits: " + " | ".join(lines[i].strip() for i in hits))
+    i = hits[0]
+    old = lines[i].strip()[2:]
+    if replacement is None:
+        del lines[i]
+    else:
+        rep = " ".join(replacement.split())
+        if not rep:
+            raise ValueError("empty replacement; omit it to remove the snippet")
+        lines[i] = f"- {rep}\n"
+    tmp = PAGE_PATH.with_suffix(".md.tmp")
+    tmp.write_text("".join(lines))
+    os.replace(tmp, PAGE_PATH)
+    return {"ok": True, "old": old, "new": replacement, "snippets": _page_snippet_count()}
+
+
+@mcp.tool()
+def pulse_edit(match: str, replacement: str | None = None) -> dict:
+    """Correct or remove one pulse page snippet.
+
+    `match` is any unique fragment of the snippet (case-insensitive). Pass
+    `replacement` to rewrite it, omit it to remove the snippet because it is
+    no longer true. Errors list every hit when the fragment is ambiguous.
+    """
+    return edit_page(match, replacement)
+
+
+@mcp.tool()
+def pulse_list() -> list[str]:
+    """The pulse page snippets as a plain list, for picking one to edit."""
+    return _page_entries()
+
+
 def record_state(inlet_id: str, state: str, summary: str | None = None) -> dict:
     """Shared by the MCP tool and the CLI, so a headless cron without MCP can record too."""
     try:

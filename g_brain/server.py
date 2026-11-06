@@ -95,7 +95,7 @@ structural work.
 basic_memory_proxy = proxy_basic_memory(BASIC_MEMORY_URL)
 
 _oauth = build_oauth_provider(base_url=MCP_PUBLIC_URL or "http://127.0.0.1:8766", store_path=OAUTH_CLIENT_STORE)
-mcp: FastMCP = FastMCP("brain", instructions=_POINTER, auth=_oauth)
+mcp: FastMCP = FastMCP("g-system", instructions=_POINTER, auth=_oauth)
 if not MCP_PUBLIC_URL:
     print("[brain] MCP_PUBLIC_URL is unset: the OAuth issuer is http://127.0.0.1:8766, "
           "so remote connectors cannot sign in", file=sys.stderr)

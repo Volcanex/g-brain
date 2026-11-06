@@ -975,23 +975,55 @@ def update_todo(
     relates_to: list[str] | None = None,
     summary: str | None = None,
     body: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    all_day: bool | None = None,
+    location: str | None = None,
+    category: str | None = None,
+    rrule: str | None = None,
+    reminders: list[int] | None = None,
+    reschedule_to: str | None = None,
+    done_date: str | None = None,
+    undone_date: str | None = None,
 ) -> dict:
     """Patch fields and/or body on a calendar item.
 
     `permalink` accepts a bare slug or full permalink. Pass `body=...`
     to replace the markdown body. Pass `status='done'` to complete.
     Only fields you pass are touched; omitted fields are left as-is.
-    The date can be moved but never cleared.
+    The date can be moved but never cleared. `start`/`end` are ISO datetimes
+    for timed events. `reschedule_to=YYYY-MM-DD` moves a one-off (keeping its
+    time of day); recurring items can't be moved, tick one occurrence off with
+    `done_date=YYYY-MM-DD` instead (`undone_date` reverses that).
     """
     slug = _resolve_slug(permalink)
     fields = {
         k: v for k, v in {
             "title": title, "status": status, "priority": priority,
             "due": due, "relates_to": relates_to, "summary": summary,
-            "body": body,
+            "body": body, "start": start, "end": end, "all_day": all_day,
+            "location": location, "category": category, "rrule": rrule,
+            "reminders": reminders, "reschedule_to": reschedule_to,
+            "done_date": done_date, "undone_date": undone_date,
         }.items() if v is not None
     }
     return _update(slug, fields)
+
+
+@mcp.tool()
+def delete_todo(permalink: str, confirmed: bool = False) -> dict:
+    """Remove a calendar item for good (the vault's git history keeps it).
+
+    Prefer `status='dropped'` via update_todo when something just no longer
+    matters; delete is for mistakes and duplicates. Needs Gabriel's say-so:
+    call once without `confirmed` to see what would go, then again with
+    `confirmed=True` after he agrees.
+    """
+    slug = _resolve_slug(permalink)
+    if not confirmed:
+        return {"would_delete": _serialize(slug, _load(slug)),
+                "next": "ask Gabriel, then call again with confirmed=True"}
+    return {"deleted": delete(slug)}
 
 
 @mcp.tool()
