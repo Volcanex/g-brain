@@ -8,12 +8,14 @@ the MCP write path.
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from threading import RLock
 from typing import Iterator
 
 import frontmatter
@@ -64,27 +66,33 @@ def _looks_like_note(path: Path) -> bool:
     return head.startswith(b"---\n") or head.startswith(b"---\r")
 
 
-def _iter_md_files() -> Iterator[Path]:
-    if not BRAIN_ROOT.exists():
-        return
-    for entry in BRAIN_ROOT.rglob("*"):
-        if not entry.is_file():
-            continue
-        rel = entry.relative_to(BRAIN_ROOT)
-        if any(p.startswith(".") for p in rel.parts):
-            continue
-        if rel.name in EXCLUDED_FILENAMES:
-            continue
-        suffix = entry.suffix.lower()
-        if suffix == ".md":
-            yield entry
-            continue
-        # Non-markdown extensions we know aren't notes: skip without sniff.
-        if suffix in _BINARY_EXTS:
-            continue
-        # Extensionless or unknown-suffix file: sniff for frontmatter.
-        if _looks_like_note(entry):
-            yield entry
+def iter_note_files(root: Path | None = None) -> Iterator[Path]:
+    root = BRAIN_ROOT if root is None else root
+    for directory, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for name in files:
+            if name.startswith(".") or name in EXCLUDED_FILENAMES:
+                continue
+            entry = Path(directory) / name
+            suffix = entry.suffix.lower()
+            if suffix == ".md" or (suffix not in _BINARY_EXTS and _looks_like_note(entry)):
+                yield entry
+
+
+def note_signature(root: Path | None = None) -> tuple:
+    """Version visible notes, including extensionless files and external writes."""
+    root = BRAIN_ROOT if root is None else root
+    files = []
+    for md in sorted(iter_note_files(root)):
+        try:
+            stat = md.stat()
+            files.append((str(md), stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size))
+        except OSError:
+            pass
+    return str(root.resolve()), tuple(files)
+
+
+_NOTES_LOCK = RLock()
 
 
 def _parse_note(md: Path) -> Note | None:
@@ -116,8 +124,8 @@ def _parse_note(md: Path) -> Note | None:
 @lru_cache(maxsize=1)
 def _all_notes_cached(_signature: tuple) -> list[Note]:
     notes: list[Note] = []
-    for md in _iter_md_files():
-        n = _parse_note(md)
+    for path, *_ in _signature[1]:
+        n = _parse_note(Path(path))
         if n is not None:
             notes.append(n)
     return notes
@@ -125,16 +133,8 @@ def _all_notes_cached(_signature: tuple) -> list[Note]:
 
 def all_notes() -> list[Note]:
     """Cache parsed notes by vault, file paths, mtimes and sizes."""
-    signature = []
-    if BRAIN_ROOT.exists():
-        for md in sorted(BRAIN_ROOT.rglob("*.md")):
-            try:
-                stat = md.stat()
-                signature.append((md.relative_to(BRAIN_ROOT).as_posix(),
-                                  stat.st_mtime_ns, stat.st_size))
-            except OSError:
-                pass
-    return _all_notes_cached((str(BRAIN_ROOT.resolve()), tuple(signature)))
+    with _NOTES_LOCK:
+        return _all_notes_cached(note_signature())
 
 
 def get_note(path: str) -> Note | None:

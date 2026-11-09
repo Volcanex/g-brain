@@ -286,3 +286,54 @@ def test_manual_aliases_still_write_reports(script, tmp_path):
         report_path = tmp_path / "status/stale.json"
         assert "stale_dep" not in frontmatter.load(md)
     assert json.loads(report_path.read_text())["checked_at"]
+
+
+def test_note_and_stale_caches_invalidate_on_external_writes(reports, tmp_path, monkeypatch):
+    from g_brain import reader, verify
+    md = _write_note(tmp_path, [_flag()])
+    load = Mock(wraps=frontmatter.load)
+    monkeypatch.setattr(frontmatter, "load", load)
+    assert reader.all_notes()[0].title == "Fixture transport"
+    assert verify.read_report(tmp_path)["outstanding"] == 1
+    calls = load.call_count
+    reader.all_notes()
+    verify.read_report(tmp_path)
+    assert load.call_count == calls
+    md.write_text(md.read_text().replace("Fixture transport", "Changed transport"))
+    assert reader.all_notes()[0].title == "Changed transport"
+    assert verify.read_report(tmp_path)["outstanding_detail"][0]["title"] == "Changed transport"
+    md.unlink()
+    assert reader.all_notes() == []
+    assert verify.read_report(tmp_path)["outstanding"] == 0
+
+
+def test_extensionless_note_changes_invalidate_listing(reports, tmp_path):
+    from g_brain import reader
+    assert reader.all_notes() == []
+    md = _write_note(tmp_path, [])
+    md.rename(md.with_suffix(""))
+    assert reader.all_notes()[0].path == "ideas/transport"
+    md.with_suffix("").write_text("---\ntitle: Changed\n---\nbody")
+    assert reader.all_notes()[0].title == "Changed"
+
+
+def test_note_listing_runs_outside_event_loop(reports, monkeypatch):
+    import threading
+    from g_brain import api
+    client, _, _, _ = reports
+    threads = []
+    monkeypatch.setattr(api, "all_notes", lambda: threads.append(threading.current_thread().name) or [])
+    assert client.get("/api/notes").status_code == 200
+    assert threads == ["AnyIO worker thread"]
+
+
+def test_listing_sees_new_files_and_folders_between_reads(reports, tmp_path):
+    from g_brain import reader
+    _write_note(tmp_path, [])
+    assert len(reader.all_notes()) == 1
+    folder = tmp_path / "new-folder"
+    folder.mkdir()
+    (folder / "new.md").write_text("---\ntitle: New note\n---\nbody")
+    assert len(reader.all_notes()) == 2
+    (folder / "another.md").write_text("---\ntitle: Another note\n---\nbody")
+    assert len(reader.all_notes()) == 3

@@ -27,11 +27,15 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sys
+from copy import deepcopy
+from functools import lru_cache
+from threading import RLock
 from pathlib import Path
 
 import frontmatter
 
 import g_config
+from g_brain.reader import note_signature, iter_note_files
 
 BRAIN_ROOT = g_config.BRAIN_ROOT
 REPORT_PATH = BRAIN_ROOT / "status" / "stale.json"
@@ -62,7 +66,7 @@ def _parse_date(value) -> dt.date | None:
 
 def _iter_flagged(root: Path):
     """Yield (path, post, flags) for every note carrying stale_dep."""
-    for md in sorted(root.rglob("*.md")):
+    for md in sorted(iter_note_files(root)):
         rel = md.relative_to(root)
         if any(p.startswith(".") for p in rel.parts):
             continue
@@ -199,9 +203,19 @@ def _notify(report: dict) -> None:
              dedup_key="brain-verify-full-clear")
 
 
-def read_report(root: Path | None = None) -> dict:
-    """Report current evidence without writing notes, reports or alerts."""
+_REPORT_LOCK = RLock()
+
+
+@lru_cache(maxsize=1)
+def _cached_report(root: Path, signature: tuple, today: dt.date) -> dict:
     return sweep(apply=False, root=root)
+
+
+def read_report(root: Path | None = None) -> dict:
+    """Reuse the report until notes or the day change; never write or alert."""
+    root = BRAIN_ROOT if root is None else root
+    with _REPORT_LOCK:
+        return deepcopy(_cached_report(root, note_signature(root), _today()))
 
 
 def main() -> int:

@@ -76,12 +76,12 @@ def create_api() -> FastAPI:
 
     # ------------------------------------------------------------------ graph
     @api.get("/graph")
-    async def graph():
+    def graph():
         return wikilink_graph()
 
     # ------------------------------------------------------------------ nerves
     @api.get("/nerves")
-    async def nerves():
+    def nerves():
         """The nervous system as a directory web.
 
         One node per repo, then one per directory that carries a CLAUDE.md or
@@ -181,7 +181,7 @@ def create_api() -> FastAPI:
 
     # ---------------------------------------------------------------- lineage
     @api.get("/lineage")
-    async def lineage():
+    def lineage():
         lineage_dir = BRAIN_ROOT / "lineage"
         nodes, links = [], []
         if not lineage_dir.exists():
@@ -218,7 +218,7 @@ def create_api() -> FastAPI:
 
     # ------------------------------------------------------------------ notes
     @api.get("/notes")
-    async def list_notes():
+    def list_notes():
         notes = all_notes()
         items = [
             {"path": n.path, "title": n.title, "kind": n.kind, "status": n.status,
@@ -237,7 +237,7 @@ def create_api() -> FastAPI:
 
     # ------------------------------------------------------------ single note
     @api.get("/note/{path:path}")
-    async def note(path: str):
+    def note(path: str):
         n = get_note(path)
         if n is None:
             raise HTTPException(status_code=404, detail="note not found")
@@ -283,11 +283,11 @@ def create_api() -> FastAPI:
 
     # ------------------------------------------------------------------- refs
     @api.get("/refs")
-    async def refs(limit: int = 100):
+    def refs(limit: int = 100):
         return {"summary": refs_summary(), "top": top_refs(limit=limit)}
 
     @api.get("/refs/graph")
-    async def refs_graph():
+    def refs_graph():
         if not REFS_DB.exists():
             return {"nodes": [], "links": []}
         conn = sqlite3.connect(REFS_DB)
@@ -327,7 +327,7 @@ def create_api() -> FastAPI:
 
     # ------------------------------------------------------------- home stats
     @api.get("/home/stats")
-    async def home_stats():
+    def home_stats():
         return {
             "kinds":  kind_counts(),
             "recent": recent_activity(limit=10),
@@ -336,7 +336,7 @@ def create_api() -> FastAPI:
 
     # ------------------------------------------------------------------ status
     @api.get("/status")
-    async def status():
+    def status():
         snap = BRAIN_ROOT / "status" / "snapshot.json"
         if not snap.exists():
             raise HTTPException(503, "status snapshot not yet generated")
