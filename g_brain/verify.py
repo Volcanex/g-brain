@@ -35,7 +35,7 @@ from pathlib import Path
 import frontmatter
 
 import g_config
-from g_brain.reader import note_signature, iter_note_files
+from g_brain.reader import invalidate_notes, iter_note_files, note_signature
 
 BRAIN_ROOT = g_config.BRAIN_ROOT
 REPORT_PATH = BRAIN_ROOT / "status" / "stale.json"
@@ -152,6 +152,7 @@ def sweep(apply: bool = True, root: Path | None = None) -> dict:
                 else:
                     post.metadata.pop("stale_dep", None)
                 md.write_text(frontmatter.dumps(post) + "\n")
+                invalidate_notes()
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{rel}: {type(exc).__name__}: {exc}")
                 # A failed write must not advertise flags as cleared.

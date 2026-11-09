@@ -128,6 +128,8 @@ def _resolve(target: str) -> Path:
 
 
 def append_commit_log(actor: str, op: str, note: str, before: str, after: str, reason: str) -> None:
+    from brain_reader import invalidate_notes
+    invalidate_notes()
     line = f"{_now_iso()}\t{actor}\t{op}\t{note}\t{before}->{after}\t{reason}\n"
     _refuse_managed_store(COMMITS_LOG)
     with COMMITS_LOG.open("a") as f:

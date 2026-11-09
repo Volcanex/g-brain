@@ -89,10 +89,19 @@ def note_signature(root: Path | None = None) -> tuple:
             files.append((str(md), stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size))
         except OSError:
             pass
-    return str(root.resolve()), tuple(files)
+    return str(root.resolve()), tuple(files), _NOTES_REVISION
 
 
 _NOTES_LOCK = RLock()
+_NOTES_REVISION = 0
+
+
+def invalidate_notes() -> None:
+    """Invalidate versioned writes even when filesystem timestamps collide."""
+    global _NOTES_REVISION
+    with _NOTES_LOCK:
+        _NOTES_REVISION += 1
+        _all_notes_cached.cache_clear()
 
 
 def _parse_note(md: Path) -> Note | None:

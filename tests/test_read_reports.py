@@ -337,3 +337,21 @@ def test_listing_sees_new_files_and_folders_between_reads(reports, tmp_path):
     assert len(reader.all_notes()) == 2
     (folder / "another.md").write_text("---\ntitle: Another note\n---\nbody")
     assert len(reader.all_notes()) == 3
+
+
+def test_versioned_review_invalidates_even_with_identical_file_versions(reports, tmp_path, monkeypatch):
+    from g_brain import reader, verify
+    _, commit, _, _ = reports
+    flag = _flag()
+    _write_note(tmp_path, [flag])
+    # Simulate a filesystem whose metadata cannot distinguish rapid rewrites.
+    root, files, _ = reader.note_signature()
+    monkeypatch.setattr(reader, "note_signature", lambda root=None: (str(tmp_path), files, reader._NOTES_REVISION))
+    monkeypatch.setattr(verify, "note_signature", reader.note_signature)
+    assert reader.all_notes()[0].version == "1.0.0"
+    assert verify.read_report(tmp_path)["outstanding"] == 1
+    review = commit.review_dependency("ideas/transport", flag["note"], flag["stamp"],
+                                      "Read both fixture contracts and verified compatibility.")
+    assert review["ok"]
+    assert reader.all_notes()[0].version == "1.0.1"
+    assert verify.read_report(tmp_path)["outstanding"] == 0
