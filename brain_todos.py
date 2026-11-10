@@ -1156,7 +1156,11 @@ def occurrences(date_from: str, date_to: str, status: str = "open") -> list[dict
                 created = None
 
         def _lead(moment):
-            return None if created is None else (moment - created).total_seconds() / 60
+            if created is None:
+                return None
+            if moment.tzinfo is not None:
+                moment = moment.astimezone().replace(tzinfo=None)
+            return (moment - created).total_seconds() / 60
 
         if start and t.get("rrule"):
             gap = rrule_interval_minutes(t["rrule"])
