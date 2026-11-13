@@ -239,6 +239,9 @@ def create_api() -> FastAPI:
     @api.get("/note/{path:path}")
     def note(path: str):
         n = get_note(path)
+        # Todo permalinks carry the vault name (brain/todos/x); paths do not.
+        if n is None and path.startswith("brain/"):
+            n = get_note(path[len("brain/"):])
         if n is None:
             raise HTTPException(status_code=404, detail="note not found")
 

@@ -909,6 +909,14 @@ def create_todo(
     with duplicate=true and nothing new is made. Items can be ticked off with
     mark_done.
 
+    The body is what Gabriel reads when he opens the item, so put everything
+    you know there: who it is with (names, roles, company, recruiter and their
+    number), how to join (link, dial-in, PIN, address), what it is about,
+    salary or cost, what to prepare, and where it came from (sender and date of
+    the email). Keep the title to what and with whom; the details go in body
+    and location. An item saved without a body comes back with
+    `missing_details`: fill it with update_todo.
+
     Args:
       title: human-readable title.
       priority: one of P0, P1, P2, P3.
@@ -917,7 +925,7 @@ def create_todo(
       rrule: iCalendar recurrence, e.g. FREQ=YEARLY, with due or start as the first day.
       amount: a bill's value in GBP, for finance items.
       relates_to: optional list of permalinks this TODO relates to.
-      body: optional markdown body.
+      body: markdown details shown when the item is opened (see above).
       category: optional category driving the calendar colour AND the automatic
         reminder ladder (work, chore, social, family, health, finance, study,
         deadline, travel, personal, errand). Setting it right is how a todo
@@ -943,11 +951,16 @@ def create_todo(
 
     Returns the created todo as a dict.
     """
-    return create(title, priority, due, relates_to, body,
-                  requester=requester, composer=composer, source=source, source_key=source_key,
-                  category=category, remind_min=remind_min, reminders=reminders, vital=vital,
-                  start=start, end=end, all_day=all_day, rrule=rrule, location=location, expires=expires,
-                  amount=amount)
+    out = create(title, priority, due, relates_to, body,
+                 requester=requester, composer=composer, source=source, source_key=source_key,
+                 category=category, remind_min=remind_min, reminders=reminders, vital=vital,
+                 start=start, end=end, all_day=all_day, rrule=rrule, location=location, expires=expires,
+                 amount=amount)
+    if isinstance(out, dict) and out.get("permalink") and not (body or "").strip() and not out.get("duplicate"):
+        out["missing_details"] = ("Saved with no details. Gabriel opens this item and sees only the title: "
+                                  "call update_todo with body= holding who, where, how to join and any "
+                                  "context you have.")
+    return out
 
 
 @mcp.tool()

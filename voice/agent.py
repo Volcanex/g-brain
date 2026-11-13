@@ -45,7 +45,7 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string"}, "priority": {"type": "string"},
             "due": {"type": "string", "description": "REQUIRED. The day, YYYY-MM-DD or a phrase like tomorrow or next Friday. For a timed item give start as well."},
-            "body": {"type": "string"},
+            "body": {"type": "string", "description": "The details Gabriel sees when he opens the item: who, where, how to join, what it is about, anything he said about it. Keep the title short and put the rest here."},
             "category": {"type": "string", "enum": ["work", "chore", "social", "family", "health", "finance", "study", "deadline", "travel", "personal", "errand"]},
             "remind_min": {"type": "integer", "description": "Minutes before to notify. Night before ~9pm=180, day before 9am=900, a week=10080. Omit for default."},
             "start": {"type": "string", "description": "ISO start for a TIMED event, e.g. 2026-06-22T09:00:00. Use instead of due when a time is given."},
