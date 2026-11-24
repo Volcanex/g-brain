@@ -78,6 +78,24 @@ def _check_http_from(host_user, host_ip, url, timeout=8):
     return ("down", f"HTTP {code or 'no response'}")
 
 
+def _check_remote(host_user, host_ip, name, timeout=60):
+    """A named check the far host's own instance runs and judges: it prints 'up|warn|down detail'.
+
+    The thresholds stay with the host they describe, so a new nerve there needs no change here.
+    Anything else it prints, or no answer, is 'unknown' and never pages."""
+    # The probe key on the far side is a forced command that allows only this verb.
+    cmd = ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", f"{host_user}@{host_ip}",
+           "check", name]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout.strip()
+    except Exception as e:  # noqa: BLE001
+        return ("unknown", f"remote check failed: {type(e).__name__}")
+    state, _, detail = out.partition("\n")[0].partition(" ")
+    if state not in ("up", "warn", "down"):
+        return ("unknown", f"remote check gave no state: {detail[:80] or 'no answer'}")
+    return (state, detail[:200] or state)
+
+
 def _check_tcp(host, port, timeout=5):
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -459,6 +477,12 @@ def probe(svc, hosts):
     if svc.get("paused"):
         method = "paused"
         state, detail = ("paused", svc["paused"])
+    elif svc.get("check"):
+        method = f"check@{svc.get('host')}"
+        if _local(svc.get("host")):
+            state, detail = ("unknown", "named checks run on a remote host only")
+        else:
+            state, detail = _check_remote(host.get("user"), host.get("hostname"), svc["check"])
     elif health_url and svc.get("probe_from") and not _local(svc["probe_from"]):
         via = hosts.get(svc["probe_from"], {})
         method = f"health_url@{svc['probe_from']}"
